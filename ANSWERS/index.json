@@ -1,0 +1,321 @@
+[
+  {
+    "folder": "1",
+    "case_id": "001",
+    "files": [
+      "index.md",
+      "history.md",
+      "attachments/bathroom-works-quotation.pdf"
+    ],
+    "channel": "tenant request",
+    "received_at": "2025-09-23T16:12:00.000Z"
+  },
+  {
+    "folder": "2",
+    "case_id": "002",
+    "files": [
+      "index.md",
+      "history.md",
+      "attachments/gas-portal-record.pdf"
+    ],
+    "channel": "tenant request",
+    "received_at": "2025-10-18T16:35:00.000Z"
+  },
+  {
+    "folder": "3",
+    "case_id": "003",
+    "files": [
+      "index.md",
+      "history.md",
+      "attachments/tap-works-invoice.pdf"
+    ],
+    "channel": "tenant request",
+    "received_at": "2025-09-14T09:20:00.000Z"
+  },
+  {
+    "folder": "4",
+    "case_id": "004",
+    "files": [
+      "index.md",
+      "history.md"
+    ],
+    "channel": "tenant request",
+    "received_at": "2025-09-16T08:33:00.000Z"
+  },
+  {
+    "folder": "5",
+    "case_id": "005",
+    "files": [
+      "index.md",
+      "history.md",
+      "attachments/invoice-NBL-005-INV-71.pdf"
+    ],
+    "channel": "tenant request",
+    "received_at": "2025-05-13T16:40:00.000Z"
+  },
+  {
+    "folder": "6",
+    "case_id": "006",
+    "files": [
+      "index.md",
+      "history.md"
+    ],
+    "channel": "landlord request",
+    "received_at": "2025-09-18T17:42:00.000Z"
+  },
+  {
+    "folder": "7",
+    "case_id": "007",
+    "files": [
+      "index.md",
+      "history.md"
+    ],
+    "channel": "tenant request",
+    "received_at": "2025-09-17T09:04:05.000Z"
+  },
+  {
+    "folder": "8",
+    "case_id": "008",
+    "files": [
+      "index.md",
+      "history.md"
+    ],
+    "channel": "tenant request",
+    "received_at": "2025-06-18T12:55:00.000Z"
+  },
+  {
+    "folder": "9",
+    "case_id": "009",
+    "files": [
+      "index.md",
+      "history.md",
+      "attachments/forwarded-document.pdf"
+    ],
+    "channel": "tenant request",
+    "received_at": "2025-09-10T18:20:00.000Z"
+  },
+  {
+    "folder": "10",
+    "case_id": "010",
+    "files": [
+      "index.md",
+      "history.md"
+    ],
+    "channel": "tenant request",
+    "received_at": "2025-09-24T14:36:22.000Z"
+  },
+  {
+    "folder": "11",
+    "case_id": "011",
+    "files": [
+      "index.md",
+      "history.md"
+    ],
+    "channel": "tenant request",
+    "received_at": "2025-06-13T15:26:00.000Z"
+  },
+  {
+    "folder": "12",
+    "case_id": "012",
+    "files": [
+      "index.md",
+      "history.md"
+    ],
+    "channel": "tenant request",
+    "received_at": "2025-09-25T12:06:33.000Z"
+  },
+  {
+    "folder": "13",
+    "case_id": "013",
+    "files": [
+      "index.md",
+      "history.md",
+      "attachments/glazing-invoice.pdf"
+    ],
+    "channel": "tenant request",
+    "received_at": "2025-09-10T10:10:00.000Z"
+  },
+  {
+    "folder": "14",
+    "case_id": "014",
+    "files": [
+      "index.md",
+      "history.md"
+    ],
+    "channel": "tenant request",
+    "received_at": "2025-01-14T17:08:00.000Z"
+  },
+  {
+    "folder": "15",
+    "case_id": "015",
+    "files": [
+      "index.md",
+      "history.md",
+      "attachments/move-out-inspection-report.pdf",
+      "attachments/property-preparation-quotation.pdf"
+    ],
+    "channel": "agency request",
+    "received_at": "2025-09-25T08:34:11.000Z"
+  },
+  {
+    "folder": "16",
+    "case_id": "016",
+    "files": [
+      "index.md",
+      "history.md"
+    ],
+    "channel": "tenant request",
+    "received_at": "2025-09-22T08:48:00.000Z"
+  },
+  {
+    "folder": "17",
+    "case_id": "017",
+    "files": [
+      "index.md",
+      "history.md",
+      "attachments/fire-door-quotation.pdf"
+    ],
+    "channel": "tenant request",
+    "received_at": "2025-02-12T16:10:00.000Z"
+  },
+  {
+    "folder": "18",
+    "case_id": "018",
+    "files": [
+      "index.md",
+      "history.md"
+    ],
+    "channel": "tenant request",
+    "received_at": "2025-09-11T14:30:00.000Z"
+  },
+  {
+    "folder": "19",
+    "case_id": "019",
+    "files": [
+      "index.md",
+      "history.md",
+      "attachments/remedial-works-invoice.pdf"
+    ],
+    "channel": "agency request",
+    "received_at": "2025-09-11T06:58:16.000Z"
+  },
+  {
+    "folder": "20",
+    "case_id": "020",
+    "files": [
+      "index.md",
+      "history.md"
+    ],
+    "channel": "tenant request",
+    "received_at": "2025-04-12T16:42:00.000Z"
+  },
+  {
+    "folder": "21",
+    "case_id": "021",
+    "files": [
+      "index.md",
+      "history.md"
+    ],
+    "channel": "tenant request",
+    "received_at": "2025-05-16T16:05:00.000Z"
+  },
+  {
+    "folder": "22",
+    "case_id": "022",
+    "files": [
+      "index.md",
+      "history.md"
+    ],
+    "channel": "tenant request",
+    "received_at": "2025-09-25T09:08:19.000Z"
+  },
+  {
+    "folder": "23",
+    "case_id": "023",
+    "files": [
+      "index.md",
+      "history.md",
+      "attachments/invoice-NBL-CFM-250210-A.pdf",
+      "attachments/invoice-NBL-CFM-250210-B.pdf"
+    ],
+    "channel": "tenant request",
+    "received_at": "2025-02-12T16:35:00.000Z"
+  },
+  {
+    "folder": "24",
+    "case_id": "024",
+    "files": [
+      "index.md",
+      "history.md",
+      "attachments/checkout-report.pdf",
+      "attachments/property-service-quotation.pdf"
+    ],
+    "channel": "agency request",
+    "received_at": "2025-09-24T16:11:00.000Z"
+  },
+  {
+    "folder": "25",
+    "case_id": "025",
+    "files": [
+      "index.md",
+      "history.md",
+      "attachments/corrected-plumbing-invoice.pdf"
+    ],
+    "channel": "tenant request",
+    "received_at": "2025-09-15T11:11:18.000Z"
+  },
+  {
+    "folder": "26",
+    "case_id": "026",
+    "files": [
+      "index.md",
+      "history.md"
+    ],
+    "channel": "tenant request",
+    "received_at": "2025-03-06T16:40:00.000Z"
+  },
+  {
+    "folder": "27",
+    "case_id": "027",
+    "files": [
+      "index.md",
+      "history.md",
+      "attachments/checkout-report.pdf",
+      "attachments/move-out-works-quotation.pdf"
+    ],
+    "channel": "agency request",
+    "received_at": "2025-09-15T16:25:18.000Z"
+  },
+  {
+    "folder": "28",
+    "case_id": "028",
+    "files": [
+      "index.md",
+      "history.md",
+      "attachments/checkout-report.pdf",
+      "attachments/provider-quotation.pdf"
+    ],
+    "channel": "agency request",
+    "received_at": "2025-09-18T14:50:04.000Z"
+  },
+  {
+    "folder": "29",
+    "case_id": "029",
+    "files": [
+      "index.md",
+      "history.md"
+    ],
+    "channel": "tenant request",
+    "received_at": "2025-05-14T13:48:00.000Z"
+  },
+  {
+    "folder": "30",
+    "case_id": "030",
+    "files": [
+      "index.md",
+      "history.md"
+    ],
+    "channel": "tenant request",
+    "received_at": "2025-09-06T18:42:00.000Z"
+  }
+]
