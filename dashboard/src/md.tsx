@@ -4,17 +4,33 @@ import type { ReactNode } from "react";
 export function sections(md: string | null): Record<string, string> {
   const out: Record<string, string> = {};
   if (!md) return out;
-  const parts = md.split(/\n(?=## )/);
-  for (const p of parts) {
+  for (const p of md.split(/\n(?=## )/)) {
     const m = p.match(/^## (.+)\n?([\s\S]*)$/);
     if (m) out[m[1].trim()] = m[2].trim();
   }
   return out;
 }
 
-// Finds a section whose title starts with the given prefix (e.g. "Execution status (generated …)").
+// A section whose title starts with the given prefix (e.g. "Execution status (generated …)").
 export const pick = (s: Record<string, string>, prefix: string) =>
   Object.entries(s).find(([k]) => k.startsWith(prefix))?.[1] ?? "";
+
+export type Message = { to: string; via: string; subject: string; body: string };
+
+// "## Messages sent (full text)" holds "### To <party> (<ref>) via <channel> — <subject>" blocks.
+export function messages(s: Record<string, string>): Message[] {
+  const text = pick(s, "Messages sent");
+  if (!text) return [];
+  return text
+    .split(/\n(?=### )/)
+    .map((block) => {
+      const m = block.match(/^### (.+)\n?([\s\S]*)$/);
+      if (!m) return null;
+      const h = m[1].match(/^To (.+?) via (\S+)(?:\s+[—-]\s+(.*))?$/);
+      return { to: h?.[1] ?? m[1], via: h?.[2] ?? "", subject: h?.[3] ?? "", body: m[2].trim() };
+    })
+    .filter((x): x is Message => !!x);
+}
 
 function inline(text: string): ReactNode[] {
   return text.split(/(\*\*[^*]+\*\*|`[^`]+`|PM-[A-Z]+-\d+)/g).map((t, i) => {
@@ -25,8 +41,8 @@ function inline(text: string): ReactNode[] {
   });
 }
 
-export function Md({ text }: { text: string }) {
-  if (!text.trim()) return <p className="none">Nothing recorded.</p>;
+export function Md({ text, empty = "Nothing recorded." }: { text: string; empty?: string }) {
+  if (!text.trim()) return <p className="none">{empty}</p>;
   const blocks: ReactNode[] = [];
   let list: string[] = [];
   let para: string[] = [];
