@@ -45,7 +45,7 @@ export function describe(tool: string, i: any): { verb: string; detail: string }
     case "assign_provider":
       return { verb: `Assigned ${i.provider ? `${i.provider} as ` : ""}${i.trade ?? "contractor"}`, detail: i.scope ?? "" };
     case "book_contractor":
-      return { verb: `Booked ${i.contractor ?? i.provider ?? "contractor"}${i.slot ? ` for ${i.slot}` : ""}`, detail: i.scope ?? i.reason ?? "" };
+      return { verb: `Booked ${i.contractor ?? i.provider ?? "contractor"}${i.slot ? ` for ${String(i.slot).length > 36 ? `${String(i.slot).slice(0, 36)}…` : i.slot}` : ""}`, detail: [i.slot && String(i.slot).length > 36 ? i.slot : "", i.scope ?? i.reason ?? ""].filter(Boolean).join(" · ") };
     case "book_inspection":
       return { verb: "Booked an inspection", detail: i.reason ?? i.scope ?? "" };
     case "record_landlord_decision":
@@ -90,7 +90,7 @@ export function actions(events: Ev[]): Action[] {
 
 export const ruleIds = (text: string) => text.match(/PM-[A-Z]+-\d+/g) ?? [];
 
-export function steps(raw: Ev[]): Step[] {
+export function steps(raw: Ev[], tierFromAnswer?: string | null): Step[] {
   const events: IEv[] = raw.map((e, i) => ({ ...e, i }));
   const t0 = events[0] ? Date.parse(events[0].ts) : 0;
   const of = (...names: string[]) => events.filter((e) => names.some((n) => (n.endsWith(".") ? e.event.startsWith(n) : e.event === n)));
@@ -127,7 +127,7 @@ export function steps(raw: Ev[]): Step[] {
   const withdrawn = recon.filter((e) => e.event === "reconcile.withdrawn").flatMap((e) => e.withdrawn ?? []);
   const retried = acts.filter((a) => a.attempts > 1);
   const resolution = [...events].reverse().find((e) => e.event === "tool.control" && e.tool === "submit_resolution")?.input;
-  const tier: string | undefined = resolution?.escalation?.tier;
+  const tier: string | undefined = tierFromAnswer ?? resolution?.escalation?.tier;
   const page = esc[esc.length - 1];
   const pageWord = page
     ? page.event === "escalate.p0.call"

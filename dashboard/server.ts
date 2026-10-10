@@ -157,7 +157,8 @@ function row(i: number, folder: string, ids: Record<string, string>) {
       withdrawn: count("reconcile.withdrawn"),
       check_problems: events.filter((e) => e.event === "checks").reduce((n, e) => n + (e.problems?.length ?? 0), 0),
     },
-    escalation: resolution?.escalation?.tier ?? null,
+    // After failed checks the orchestrator escalates in code; that tier is in ANSWER.md, not in the submit payload.
+    escalation: section(answer, "Escalation").match(/^Tier (P\d|none)/)?.[1] ?? resolution?.escalation?.tier ?? null,
     handover: resolution?.escalation?.handover ?? null,
     page: p0.length ? p0[p0.length - 1].event.replace("escalate.p0.", "") : null,
     paged: p0.some((e) => e.event === "escalate.p0.call"),

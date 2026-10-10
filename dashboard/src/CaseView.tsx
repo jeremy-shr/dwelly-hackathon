@@ -7,7 +7,7 @@ import { OnCall, hasOnCall } from "./OnCall";
 
 export function CaseView({ caseKey, onBack, onEvent }: { caseKey: string; onBack: () => void; onEvent: (i: number) => void }) {
   const d = usePoll<CaseDetail>(`/api/case/${caseKey}`, 1500);
-  const list = useMemo(() => (d ? steps(d.events) : []), [d]);
+  const list = useMemo(() => (d ? steps(d.events, d.summary.escalation) : []), [d]);
   const [open, setOpen] = useState<string | null | undefined>(undefined); // undefined = not chosen yet
 
   // Open the first failing step by default; the rest stay collapsed.
@@ -268,6 +268,8 @@ function StepDetail({ step, d }: { step: Step; d: CaseDetail }) {
     }
     case "escalated": {
       const e = d.resolution?.escalation;
+      const written = sections(d.answer)["Escalation"] ?? "";
+      if (written) return <Md text={written} />;
       if (!e || !e.tier || e.tier === "none") return <p className="muted">No escalation. The agent could act within its authority.</p>;
       return (
         <dl className="kv">
