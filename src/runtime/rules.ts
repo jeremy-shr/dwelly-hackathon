@@ -30,7 +30,7 @@ export const RULE_TABLE: { id: string; precedence: number; title: string; severi
   { id: "PM-DATA-001", precedence: 2, title: "Property identity conflicts block outbound messages", severity: "block", sources: "005, 006, 008, 009, 015, 022, 028, 032-034, 037, 038, 045, 048" },
   { id: "PM-DATA-002", precedence: 2, title: "Actor identity conflicts must be resolved before relying on a recipient", severity: "warn", sources: "001, 002, 025, 026, 032, 043, 050" },
   { id: "PM-DATA-003", precedence: 2, title: "Date and amount conflicts block automatic approval, closure or payment", severity: "warn", sources: "019, 039, 043, 050" },
-  { id: "PM-PRIV-001", precedence: 2, title: "Tenant contact details only to the assigned contractor, or with consent", severity: "block", sources: "045" },
+  { id: "PM-PRIV-001", precedence: 2, title: "Tenant contact details only to the contractor instructed on the job (agency panel or landlord-chosen and approved), never to anyone else", severity: "block", sources: "015, 045" },
   { id: "PM-OCC-001", precedence: 3, title: "Not tenanted: no tenant messages or access requests", severity: "block", sources: "006" },
   { id: "PM-AUTH-001", precedence: 4, title: "Landlord approval before provider dispatch", severity: "block", sources: "043, 048" },
   { id: "PM-AUTH-002", precedence: 4, title: "Quote approval before quoted works", severity: "block", sources: "008, 019" },
@@ -115,8 +115,12 @@ export function guardRules(tool: string, input: any, state: CaseState | undefine
     const leaks = contacts.filter((c) => (c.includes("@") ? body.toLowerCase().includes(c) : normPhone(body).includes(c)));
     if (leaks.length) {
       const consent = consentOnFile(state);
-      if (input?.to_party !== "contractor") return { id: "PM-PRIV-001", severity: "block", defaultAction: "message_tenant", reason: `message to ${input?.to_party} contains the tenant's contact details (${leaks.join(", ")}); tenant details go only to the assigned contractor${consent ? "" : " or with the tenant's consent"}.` };
-      if (state.landlordApproval.status === "own_contractor" && !consent) return { id: "PM-PRIV-001", severity: "block", defaultAction: "message_tenant", reason: `the landlord is using their own contractor and the tenant has not consented to their details being shared; ask the tenant first.` };
+      if (input?.to_party !== "contractor") return { id: "PM-PRIV-001", severity: "block", defaultAction: "message_tenant", reason: `message to ${input?.to_party} contains the tenant's contact details (${leaks.join(", ")}); tenant details go only to the contractor instructed on the job.` };
+      // A landlord-chosen contractor who the landlord approved and who is instructed on the job counts as the assigned contractor (015, 045):
+      // their details may go in the instruction. Anyone the case does not name as that contractor (a landlord's friend, an unnamed firm) is not instructed and still blocked.
+      const recipient = `${input?.to_ref ?? ""} ${String(input?.subject ?? "")} ${body.split("\n").slice(0, 3).join(" ")}`;
+      const namedInCase = isKnownContractor(state, recipient) || related(recipient, `${state.landlordApproval.text ?? ""} ${state.landlordApproval.conditions ?? ""}`);
+      if (state.landlordApproval.status === "own_contractor" && !namedInCase && !consent) return { id: "PM-PRIV-001", severity: "block", defaultAction: "request_clarification", reason: `the landlord is using their own contractor, and "${String(input?.to_ref ?? "").slice(0, 60)}" is not the contractor named in the case as approved and instructed on this job; tenant details go only to that contractor (or with the tenant's consent).` };
     }
   }
   // 3 occupancy
