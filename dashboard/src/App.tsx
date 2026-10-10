@@ -4,6 +4,7 @@ import type { Row, Summary } from "./types";
 import { Queue } from "./Queue";
 import { CaseView } from "./CaseView";
 import { EventPage } from "./EventPage";
+import { System } from "./System";
 
 type Tab = "queue" | "case" | "event" | "system";
 
@@ -48,7 +49,7 @@ export function App() {
       {tab === "queue" && <Queue rows={rows} summary={summary} onOpen={openCase} />}
       {tab === "case" && caseKey && <CaseView caseKey={caseKey} onBack={() => setTab("queue")} onEvent={openEvent} />}
       {tab === "event" && caseKey && <EventPage caseKey={caseKey} index={eventIndex} onIndex={setEventIndex} onBack={() => setTab("case")} />}
-      {tab === "system" && <p className="page muted">System</p>}
+      {tab === "system" && <System />}
     </div>
   );
 }
