@@ -8,7 +8,7 @@
 - Reality Test results path: `ANSWERS/`
 - Demo video path: `demo/dwelly-demo.mp4`
 - LinkedIn post URL: https://lnkd.in/p/ej2BVZfJ
-- X post URL:
+- X post URL: https://x.com/Vedaant_k/status/2108943271288353128
 
 ## Required Repo Contents
 
