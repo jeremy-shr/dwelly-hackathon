@@ -3,6 +3,7 @@ import { usePoll } from "./api";
 import type { Row, Summary } from "./types";
 import { Queue } from "./Queue";
 import { CaseView } from "./CaseView";
+import { EventPage } from "./EventPage";
 
 type Tab = "queue" | "case" | "event" | "system";
 
@@ -46,7 +47,7 @@ export function App() {
       </header>
       {tab === "queue" && <Queue rows={rows} summary={summary} onOpen={openCase} />}
       {tab === "case" && caseKey && <CaseView caseKey={caseKey} onBack={() => setTab("queue")} onEvent={openEvent} />}
-      {tab === "event" && caseKey && <p className="page muted">Event {eventIndex}</p>}
+      {tab === "event" && caseKey && <EventPage caseKey={caseKey} index={eventIndex} onIndex={setEventIndex} onBack={() => setTab("case")} />}
       {tab === "system" && <p className="page muted">System</p>}
     </div>
   );
