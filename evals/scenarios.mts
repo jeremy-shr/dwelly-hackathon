@@ -161,6 +161,14 @@ await ruleScenario("T-promise-with-provider", baseState({ landlordApproval: { st
   () => sub({ decision: "Assigned Oakfield Homes and told the tenant.", finalState: "scheduled" }),
 ], { noCheck: "PM-GEN-002", notBlocked: "assign_provider" });
 
+// U: landlord's own contractor, approved and instructed on the job -> tenant details may go in the instruction (015, 045)
+const ownContractorState = baseState({ stage: "dispatch", landlordApproval: { status: "own_contractor", eventN: 11, text: "LL is arranging a visit with his own contractors, Lantern Surveying" },
+  parties: [{ role: "tenant", names: ["Isaac Quinn"], phones: ["07700 900844"], emails: [] }, { role: "landlord", names: ["Ava Rowan"] }, { role: "contractor", names: ["Lantern Surveying", "Oakley"], isLandlordsOwnContractor: true }] });
+const toContractor = (ref: string, body: string) => ["send_message", { to_party: "contractor", to_ref: ref, channel: "email", body }] as [string, any];
+await ruleScenario("U-details-to-instructed-ll-contractor", ownContractorState, [() => calls([toContractor("Lantern Surveying", "Hello Oakley, the landlord has asked you to survey the windows at Flat 8, 118 Meadow Row, Alderwick, ZZ3 6ZZ. Tenant: Isaac Quinn, 07700 900844. Please contact the tenant to arrange access.")]), () => sub({ finalState: "scheduled" })], { notBlocked: "send_message" });
+// V: the same details to a landlord's friend who is not the instructed contractor -> still blocked
+await ruleScenario("V-details-to-uninstructed-friend", ownContractorState, [() => calls([toContractor("Dave Jenkins", "Hi Dave, the landlord mentioned you might help. The tenant is Isaac Quinn on 07700 900844."), hold]), () => okSub()], { blocked: "PM-PRIV-001" });
+
 const fails = ruleResults.filter((r) => r.includes("FAIL"));
 console.log(`\n===== rule scenarios: ${ruleResults.length - fails.length}/${ruleResults.length} passed${fails.length ? "\n" + fails.join("\n") : ""}`);
 if (fails.length) process.exitCode = 1;
