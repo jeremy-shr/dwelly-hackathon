@@ -152,16 +152,21 @@ function callBrief(body: any): Record<string, string> {
   const pick = (...vals: unknown[]) => vals.find(meaningful) as string | undefined;
   const tenant = pick(body.tenant_name, ctx.tenant);
   // Spoken form: ids become names, "the tenant" becomes their name when known.
-  const say = (t: string) => { const s = speakIds(t); return tenant ? s.replace(/\bthe tenant\b/gi, tenant) : s; };
+  const resText = [res.summaryForHuman, res.decision, res.escalation?.decisionRequired, body.summary, body.decision_required].filter(meaningful).join(" ");
+  const say = (t: string) => { const s = speakIds(t, resText); return tenant ? s.replace(/\bthe tenant\b/gi, tenant) : s; };
   const property = pick(body.property, ctx.property);
   const assessed = pick(body.issue, body.summary, res.summaryForHuman);
   const unknowns = [...(res.missingInformation ?? []), ...(res.conflicts ?? []).map((c: any) => c.facts)].filter(meaningful);
-  const deadline = spokenDeadline(body.deadline);
+  // P0: the call itself is the urgency, so no deadline is spoken. P1: the deadline in words.
+  const tier = body.tier === "P1" ? "P1" : "P0";
+  const deadline = tier === "P1" ? spokenDeadline(body.deadline) : undefined;
 
   // What the pipeline needs from a person comes first; the per-flag playbook is only a fallback.
   // Playbook options are dropped when the pipeline has already booked a contractor (they would offer to book one).
   const needed = pick(body.decision_required, res.escalation?.decisionRequired);
-  const [firstAsk, ...restAsk] = needed ? say(needed).split(/(?<=\.)\s+/) : [];
+  const [askSentence, ...restAsk] = needed ? say(needed).split(/(?<=\.)\s+/) : [];
+  // Option 1 is one short sentence: the first clause of what the pipeline asks a person to do.
+  const firstAsk = askSentence ? askSentence.split(/;\s+|,\s+and\s+(?=arrange|confirm|check)/)[0].replace(/[.;,]*$/, ".") : undefined;
   const fromPipeline = firstAsk && !/^Review the proposed actions/i.test(firstAsk);
   const booked = ctx.executed.some((t) => /book_contractor|assign_provider/.test(t));
   const options = pick(body.options) ?? (fromPipeline
@@ -178,7 +183,7 @@ function callBrief(body: any): Record<string, string> {
     tenant_name: tenant ?? "the tenant",
     issue: say(assessed ?? (ctx.report ? `The tenant reported: "${ctx.report.slice(0, 250)}"` : "An urgent case needs a decision; the details are in the case file.")),
     tenant_words: ctx.report ? ctx.report.slice(0, 250) : "not available",
-    already_done: ctx.executed.length ? `Already done by our system: ${[...new Set(ctx.executed)].map((t) => t.replace(/_/g, " ")).join(", ")}.` : "Nothing has been actioned yet.",
+    already_done: ctx.done.length ? `Already done, say it is done and never offer it: ${ctx.done.join("; ")}.` : "Nothing has been actioned yet.",
     also_needed: restAsk.length ? restAsk.join(" ") : "nothing else",
     why_urgent: say(pick(body.why_urgent, res.escalation?.reason && !/^Automated checks failed/.test(res.escalation.reason) ? res.escalation.reason : undefined) ?? play.why_urgent) + (deadline ? ` A decision is needed ${deadline}.` : ""),
     risk_if_delayed: pick(body.risk_if_delayed) ?? play.risk_if_delayed,
