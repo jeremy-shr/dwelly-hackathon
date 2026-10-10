@@ -21,6 +21,7 @@ export type Row = {
   counts: { events: number; reads: number; staged: number; executed: number; failed: number; blocked: number; withdrawn: number };
   page: string | null;
   has_callback: boolean;
+  callback_status: string | null;
   judge: { outcome: number; judgement: number; critical: boolean; verdict: string | null } | null;
 };
 
@@ -45,4 +46,5 @@ export type CaseDetail = {
   resolution: any;
   judge: any;
   callback: any;
+  whatsapp: any;
 };

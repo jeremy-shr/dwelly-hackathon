@@ -1,75 +1,68 @@
 import type { Row, Summary } from "./types";
 import { clean } from "./api";
 
-const tiles: { label: string; get: (s: Summary | null, rows: Row[]) => string | number }[] = [
-  { label: "Processed", get: (s, r) => `${s?.completed ?? 0}/${s?.total ?? r.length}` },
-  { label: "Scheduled", get: (s) => s?.by_status.scheduled ?? 0 },
-  { label: "Awaiting approval", get: (s) => s?.by_status.awaiting_approval ?? 0 },
-  { label: "On hold", get: (s) => s?.by_status.on_hold ?? 0 },
-  { label: "Escalated", get: (s) => s?.by_status.escalated ?? 0 },
-  { label: "Elapsed", get: (s) => (s?.elapsed != null ? `${s.elapsed}s` : "–") },
-];
-
-export function Urgency({ u }: { u: string | null }) {
-  return <span className={`urg urg-${u ?? "none"}`}>{u ?? "··"}</span>;
-}
-
-export function Status({ s }: { s: string }) {
-  return <span className={`status st-${s}`}>{clean(s)}</span>;
-}
-
-function live(r: Row) {
+function phase(r: Row) {
   const c = r.counts;
-  return [c.reads && `${c.reads} reads`, c.staged && `${c.staged} staged`, c.executed && `${c.executed} executed`].filter(Boolean).join(" · ") || "working";
+  if (c.executed) return `actioning · ${c.executed} done`;
+  if (c.staged) return `proposed ${c.staged} actions`;
+  if (c.reads) return `looking up · ${c.reads} reads`;
+  return "routing";
 }
 
 export function QueueBoard({ rows, summary, onOpen }: { rows: Row[]; summary: Summary | null; onOpen: (f: string) => void }) {
+  const by = summary?.by_status ?? {};
+  const counts: [string, number | string, string?][] = [
+    ["cases", summary?.total ?? rows.length],
+    ["done", summary?.completed ?? 0],
+    ["working", by.running ?? 0, "live"],
+    ["scheduled", by.scheduled ?? 0],
+    ["awaiting approval", by.awaiting_approval ?? 0],
+    ["on hold", by.on_hold ?? 0],
+    ["escalated", by.escalated ?? 0, "warn"],
+  ];
   return (
-    <main className="board">
-      <section className="tiles">
-        {tiles.map((t) => (
-          <div className="tile" key={t.label}>
-            <div className="tile-value">{t.get(summary, rows)}</div>
-            <div className="tile-label">{t.label}</div>
-          </div>
+    <main className="page queue">
+      <div className="strip mono">
+        {counts.map(([k, v, t]) => (
+          <span key={k} data-t={t && Number(v) > 0 ? t : undefined}>
+            <b>{v}</b> {k}
+          </span>
         ))}
-        {summary?.running && <div className="live-dot" title="run in progress">live</div>}
-      </section>
-      <section className="queue">
-        <div className="qrow qhead">
-          <span />
-          <span>Case</span>
-          <span>Property</span>
-          <span>Family</span>
-          <span>Stage</span>
-          <span>Final state</span>
-          <span>Next action</span>
-        </div>
-        {rows.length === 0 && <div className="empty">Cases will appear here as the runner writes them.</div>}
-        {rows.map((r) => (
-          <button key={r.folder} className="qrow" data-status={r.status} onClick={() => onOpen(r.folder)}>
-            <Urgency u={r.urgency} />
-            <span className="q-id">
-              {r.case_id}
-              {r.counts.failed + r.counts.blocked + r.counts.withdrawn > 0 && <span className="exc" title="execution exception handled">!</span>}
-              {r.page && <span className="pager" title={`on-call ${r.page}`}>☎</span>}
-            </span>
-            <span className="q-prop">{r.property ?? r.channel ?? "–"}</span>
-            <span className="q-fam">{clean(r.family) || "–"}</span>
-            <span className="q-stage">{r.status === "running" ? <em className="working">{live(r)}</em> : r.next.stage ?? "–"}</span>
-            <span><Status s={r.status} /></span>
-            <span className="q-next">
-              {r.next.type ? (
-                <>
-                  <b>{clean(r.next.type)}</b> → {r.next.recipient}
-                </>
-              ) : (
-                "–"
-              )}
-            </span>
-          </button>
-        ))}
-      </section>
+        <span className="strip-end">{summary?.elapsed != null ? `${summary.elapsed} s elapsed` : ""}</span>
+      </div>
+      <table className="ledger">
+        <thead>
+          <tr>
+            <th className="c-u" />
+            <th className="c-id">Case</th>
+            <th>Property</th>
+            <th className="c-f">Family</th>
+            <th>Where it stands</th>
+            <th className="c-s">State</th>
+            <th>Next action</th>
+          </tr>
+        </thead>
+        <tbody>
+          {rows.length === 0 && (
+            <tr><td colSpan={7} className="muted pad">Waiting for the runner. Rows appear as each case folder is written.</td></tr>
+          )}
+          {rows.map((r) => (
+            <tr key={r.folder} data-status={r.status} onClick={() => onOpen(r.folder)} tabIndex={0} onKeyDown={(e) => e.key === "Enter" && onOpen(r.folder)}>
+              <td className="c-u"><span className={`urg u-${r.urgency ?? "none"}`}>{r.urgency ?? ""}</span></td>
+              <td className="c-id mono">
+                {r.case_id}
+                {r.counts.failed + r.counts.withdrawn > 0 && <span className="flag bad" title="execution failure handled">exc</span>}
+                {r.page && <span className="flag warn" title={`on-call ${r.page}`}>call</span>}
+              </td>
+              <td className="clip">{r.property ?? <span className="muted">{clean(r.channel)}</span>}</td>
+              <td className="c-f">{clean(r.family)}</td>
+              <td className="clip">{r.status === "running" ? <span className="live-t">{phase(r)}</span> : r.next.stage ?? ""}</td>
+              <td className="c-s"><span className={`state s-${r.status}`}>{clean(r.status)}</span></td>
+              <td className="clip mono small">{r.next.type ? `${clean(r.next.type)} → ${r.next.recipient}` : ""}</td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
     </main>
   );
 }

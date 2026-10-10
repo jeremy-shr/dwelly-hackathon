@@ -3,7 +3,25 @@ import http from "node:http";
 import fs from "node:fs";
 import path from "node:path";
 
-const OUT = path.resolve(process.env.OUT_DIR ?? "../out/public-full-2");
+const DEFAULT_OUT = path.resolve(process.env.OUT_DIR ?? "../out/public-full-2");
+const OUT_ROOT = path.dirname(DEFAULT_OUT);
+// The run being read for the current request; switchable with ?run=<folder under OUT_ROOT>.
+let OUT = DEFAULT_OUT;
+const isRun = (dir: string) =>
+  fs.existsSync(path.join(dir, "index.json")) ||
+  fs.existsSync(path.join(dir, "summary.md")) ||
+  fs.readdirSync(dir).some((n) => fs.existsSync(path.join(dir, n, "trace.jsonl")));
+const runs = () => {
+  try {
+    return fs
+      .readdirSync(OUT_ROOT, { withFileTypes: true })
+      .filter((d) => d.isDirectory() && isRun(path.join(OUT_ROOT, d.name)))
+      .map((d) => d.name)
+      .sort();
+  } catch {
+    return [];
+  }
+};
 const PORT = Number(process.env.API_PORT ?? 8788);
 
 type Ev = Record<string, any> & { ts: string; event: string };
@@ -58,11 +76,13 @@ const parseNext = (line: string) => {
   return { type: m[1], recipient: m[2].trim(), stage, confidence, rules };
 };
 
+const STREET = "(?:Road|Street|Lane|Avenue|Close|Walk|Mews|Row|Quay|Way|Drive|Place|Court|Gardens|Square|Terrace|Crescent|Hill|Park|Grove|View)";
+const POSTCODE = "[A-Z]{1,2}\\d[A-Z\\d]?\\s?\\d[A-Z]{2}";
 const findProperty = (md: string): string | null => {
   const a = md.match(/Address:\s*([^\n"\\]+)/)?.[1]?.trim();
-  if (a) return a;
-  const pc = md.match(/(?:Flat|Apartment|Unit|House)?\s*[\w ,.'-]{0,60}?\b[A-Z]{1,2}\d[A-Z\d]?\s?\d[A-Z]{2}\b/);
-  return pc ? pc[0].trim() : null;
+  if (a) return a.split(/\s\(|\.\s/)[0].replace(/\.$/, "");
+  const re = new RegExp(`(?:(?:Flat|Apartment|Unit|Room)\\s+[\\w-]+,?\\s*)?\\d+[A-Za-z]?\\s+(?:[A-Z][\\w']*\\s+){1,3}${STREET}\\b(?:,\\s*[A-Z]\\w*(?: [A-Z]\\w*)*)*(?:,?\\s*${POSTCODE})?`);
+  return md.match(re)?.[0]?.trim() ?? null;
 };
 
 const resolutionOf = (events: Ev[]) =>
@@ -134,6 +154,7 @@ function row(folder: string, index: any[]) {
     },
     page: p0.length ? p0[p0.length - 1].event.replace("escalate.p0.", "") : null,
     has_callback: !!callback,
+    callback_status: callback?.status ?? null,
     judge: judge
       ? {
           outcome: judge.outcome_score,
@@ -185,6 +206,7 @@ function caseDetail(folder: string) {
     resolution: resolutionOf(events),
     judge: readJson(path.join(dir, "JUDGE.json")),
     callback: readJson(path.join(dir, "callback.json")),
+    whatsapp: readJson(path.join(dir, "whatsapp_reply.json")),
   };
 }
 
@@ -196,7 +218,10 @@ const send = (res: http.ServerResponse, code: number, body: unknown) => {
 http
   .createServer((req, res) => {
     const url = new URL(req.url ?? "/", "http://x");
+    const run = url.searchParams.get("run");
+    OUT = run && /^[\w.-]+$/.test(run) && fs.existsSync(path.join(OUT_ROOT, run)) ? path.join(OUT_ROOT, run) : DEFAULT_OUT;
     try {
+      if (url.pathname === "/api/runs") return send(res, 200, { default: path.basename(DEFAULT_OUT), runs: runs() });
       if (url.pathname === "/api/cases") {
         const index = loadIndex();
         return send(res, 200, caseFolders().map((f) => row(f, index)));

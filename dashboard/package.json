@@ -4,7 +4,7 @@
   "type": "module",
   "scripts": {
     "dev": "concurrently -k -n api,web -c cyan,magenta \"pnpm api\" \"vite\"",
-    "api": "tsx server.ts",
+    "api": "tsx watch server.ts",
     "build": "tsc --noEmit && vite build",
     "typecheck": "tsc --noEmit"
   },
