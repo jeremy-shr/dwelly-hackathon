@@ -41,7 +41,7 @@ export async function runCase(c: Case, deps: RunDeps): Promise<CaseOutput> {
   };
   const blockNew = (before: number, reason: string) => { for (const a of run.staged.slice(before)) if (a.status === "staged") { a.status = "blocked"; a.error = reason; } };
   const troubled = () => run.staged.filter((a) => a.status === "failure" || a.status === "unknown");
-  const pushEscalate = (id: string, tier: "P0" | "P1", decisionRequired: string, fact: string) => run.staged.push({ actionId: id, tool: "escalate", input: { tier, decision_required: decisionRequired, summary: fact, what_was_tried: fact }, status: "staged" });
+  const pushEscalate = (id: string, tier: "P0" | "P1", decisionRequired: string, fact: string) => { trace.log("escalate.auto", { id, tier, decisionRequired, reason: fact }); run.staged.push({ actionId: id, tool: "escalate", input: { tier, decision_required: decisionRequired, summary: fact, what_was_tried: fact }, status: "staged" }); };
 
   try {
     const [r, jev] = await Promise.all([routeCase(c, deps.models, trace), shadowClassify(c.rawText, trace)]);
