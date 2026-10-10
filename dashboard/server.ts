@@ -1,27 +1,14 @@
-// Read-only data API over a runner output folder. Never writes anything.
+// Read-only data API over one or more runner output directories. Never writes anything.
+//   OUT_DIRS=../out/public-full-2,../out/live   (comma separated; OUT_DIR accepted as a single-dir alias)
 import http from "node:http";
 import fs from "node:fs";
 import path from "node:path";
 
-const DEFAULT_OUT = path.resolve(process.env.OUT_DIR ?? "../out/public-full-2");
-const OUT_ROOT = path.dirname(DEFAULT_OUT);
-// The run being read for the current request; switchable with ?run=<folder under OUT_ROOT>.
-let OUT = DEFAULT_OUT;
-const isRun = (dir: string) =>
-  fs.existsSync(path.join(dir, "index.json")) ||
-  fs.existsSync(path.join(dir, "summary.md")) ||
-  fs.readdirSync(dir).some((n) => fs.existsSync(path.join(dir, n, "trace.jsonl")));
-const runs = () => {
-  try {
-    return fs
-      .readdirSync(OUT_ROOT, { withFileTypes: true })
-      .filter((d) => d.isDirectory() && isRun(path.join(OUT_ROOT, d.name)))
-      .map((d) => d.name)
-      .sort();
-  } catch {
-    return [];
-  }
-};
+const DIRS = (process.env.OUT_DIRS ?? process.env.OUT_DIR ?? "../out/public-full-2,../out/demo-check")
+  .split(",")
+  .map((s) => s.trim())
+  .filter(Boolean)
+  .map((p) => path.resolve(p));
 const PORT = Number(process.env.API_PORT ?? 8788);
 
 type Ev = Record<string, any> & { ts: string; event: string };
@@ -39,7 +26,7 @@ const readJson = (p: string): any => {
   try {
     return JSON.parse(t);
   } catch {
-    return null;
+    return null; // half-written file; try again next poll
   }
 };
 const readTrace = (dir: string): Ev[] => {
@@ -57,6 +44,7 @@ const readTrace = (dir: string): Ev[] => {
   return out;
 };
 
+// "## Title" section body from ANSWER.md / REASONING.md. Returns "" when absent.
 const section = (md: string, title: string): string => {
   const i = md.indexOf(`\n## ${title}`);
   if (i < 0) return "";
@@ -78,39 +66,48 @@ const parseNext = (line: string) => {
 
 const STREET = "(?:Road|Street|Lane|Avenue|Close|Walk|Mews|Row|Quay|Way|Drive|Place|Court|Gardens|Square|Terrace|Crescent|Hill|Park|Grove|View)";
 const POSTCODE = "[A-Z]{1,2}\\d[A-Z\\d]?\\s?\\d[A-Z]{2}";
-const findProperty = (md: string): string | null => {
+const ADDRESS = new RegExp(`(?:(?:Flat|Apartment|Unit|Room)\\s+[\\w-]+,?\\s*)?\\d+[A-Za-z]?\\s+(?:[A-Z][\\w']*\\s+){1,3}${STREET}\\b(?:,\\s*[A-Z]\\w*(?: [A-Z]\\w*)*)*(?:,?\\s*${POSTCODE})?`);
+// The property: from the prefetch query while the case runs, then from ANSWER.md once written.
+const findProperty = (events: Ev[], md: string): string | null => {
+  const q = events.find((e) => e.event === "prefetch")?.queries?.find?.((s: string) => typeof s === "string" && s.startsWith("property_address="));
+  if (q) return q.slice("property_address=".length).trim();
   const a = md.match(/Address:\s*([^\n"\\]+)/)?.[1]?.trim();
   if (a) return a.split(/\s\(|\.\s/)[0].replace(/\.$/, "");
-  const re = new RegExp(`(?:(?:Flat|Apartment|Unit|Room)\\s+[\\w-]+,?\\s*)?\\d+[A-Za-z]?\\s+(?:[A-Z][\\w']*\\s+){1,3}${STREET}\\b(?:,\\s*[A-Z]\\w*(?: [A-Z]\\w*)*)*(?:,?\\s*${POSTCODE})?`);
-  return md.match(re)?.[0]?.trim() ?? null;
+  return md.match(ADDRESS)?.[0]?.trim() ?? null;
 };
 
 const resolutionOf = (events: Ev[]) =>
   [...events].reverse().find((e) => e.event === "tool.control" && e.tool === "submit_resolution")?.input ?? null;
 
-const loadIndex = (): any[] => readJson(path.join(OUT, "index.json")) ?? [];
-
-const caseFolders = (): string[] => {
-  let names: string[] = [];
+// Case folders are whatever directories exist under each output dir. index.json only maps folder → case id.
+const foldersIn = (dir: string): string[] => {
   try {
-    names = fs
-      .readdirSync(OUT, { withFileTypes: true })
-      .filter((d) => d.isDirectory() && !d.name.startsWith("."))
+    return fs
+      .readdirSync(dir, { withFileTypes: true })
+      .filter((d) => d.isDirectory() && !d.name.startsWith(".") && d.name !== "node_modules")
       .map((d) => d.name);
   } catch {
     return [];
   }
-  for (const r of loadIndex()) if (r?.folder && !names.includes(String(r.folder))) names.push(String(r.folder));
-  const num = (s: string) => (/^\d+$/.test(s) ? Number(s) : NaN);
-  return names.sort((a, b) => (isNaN(num(a)) || isNaN(num(b)) ? a.localeCompare(b) : num(a) - num(b)));
+};
+const idMap = (dir: string): Record<string, string> => {
+  const idx = readJson(path.join(dir, "index.json"));
+  const map: Record<string, string> = {};
+  if (Array.isArray(idx)) for (const r of idx) if (r?.folder != null && r?.case_id != null) map[String(r.folder)] = String(r.case_id);
+  return map;
+};
+// The voice service records each WhatsApp page it sent in <live dir>/pending-alerts.json, keyed by phone number.
+const alertsIn = (dir: string): { case_id: string; dir: string; sent_at: string; to: string }[] => {
+  const a = readJson(path.join(dir, "pending-alerts.json"));
+  if (!a || typeof a !== "object") return [];
+  return Object.entries(a).map(([to, v]: [string, any]) => ({ to, case_id: String(v?.case_id ?? ""), dir: String(v?.dir ?? ""), sent_at: String(v?.sent_at ?? "") }));
 };
 
-function row(folder: string, index: any[]) {
-  const dir = path.join(OUT, folder);
+function row(i: number, folder: string, ids: Record<string, string>) {
+  const base = DIRS[i];
+  const dir = path.join(base, folder);
   const events = readTrace(dir);
-  const idx = index.find((r) => String(r.folder) === folder);
   const answer = readText(path.join(dir, "ANSWER.md")) ?? "";
-  const judge = readJson(path.join(dir, "JUDGE.json"));
   const callback = readJson(path.join(dir, "callback.json"));
   const end = events.find((e) => e.event === "case.end");
   const start = events.find((e) => e.event === "case.start");
@@ -118,31 +115,38 @@ function row(folder: string, index: any[]) {
   const agent = events.find((e) => e.event === "agent.start");
   const resolution = resolutionOf(events);
   const nextLine = section(answer, "Next action").split("\n")[0]?.trim() ?? "";
-  const finalState = section(answer, "Final state").split("\n")[0]?.trim() ?? "";
-  const fsMatch = finalState.match(/^(\S+)\s*\(family:\s*([^,]+),\s*urgency:\s*(\w+)\)/);
-  const tierFromAnswer = section(answer, "Escalation").match(/Tier\s+(P\d)/)?.[1];
   const count = (name: string) => events.filter((e) => e.event === name).length;
-  const p0 = events.filter((e) => e.event.startsWith("escalate.p0"));
+  const p0 = events.filter((e) => e.event.startsWith("escalate.p0."));
+  const last = events[events.length - 1];
+  let mtime: number | null = null;
+  try {
+    mtime = fs.statSync(dir).mtimeMs;
+  } catch {
+    // folder vanished between readdir and stat
+  }
   return {
+    key: `${i}/${folder}`,
+    dir: path.basename(base),
     folder,
-    case_id: idx?.case_id ?? start?.case ?? end?.case ?? folder,
-    channel: idx?.channel ?? start?.channel ?? null,
-    received_at: idx?.received_at ?? null,
-    status: end ? end.status : events.length ? "running" : "queued",
-    family: route?.families?.[0] ?? fsMatch?.[2]?.trim() ?? null,
+    case_id: ids[folder] ?? start?.case ?? folder,
+    channel: start?.channel ?? null,
+    // Only the trace says what a case is. No case.end means it is still running.
+    status: end ? String(end.status) : events.length ? "running" : "queued",
+    last_event: last?.event ?? null,
+    family: route?.families?.[0] ?? null,
     families: route?.families ?? [],
-    urgency: route?.urgency ?? fsMatch?.[3] ?? null,
-    escalation: resolution?.escalation?.tier ?? tierFromAnswer ?? null,
+    urgency: route?.urgency ?? null,
+    route_confidence: route?.confidence ?? null,
+    route_reasons: route?.reasons ?? null,
     agent: agent?.agent ?? null,
     seconds: end?.ms != null ? Math.round(end.ms / 1000) : null,
     started_at: start?.ts ?? null,
     ended_at: end?.ts ?? null,
+    folder_mtime: mtime,
     flags: start?.flags ?? [],
     next_action: nextLine || null,
     next: parseNext(nextLine),
-    final_state: finalState || null,
-    property: findProperty(answer),
-    summary: section(answer, "Summary") || null,
+    property: findProperty(events, answer),
     counts: {
       events: events.length,
       reads: count("tool.read"),
@@ -151,62 +155,98 @@ function row(folder: string, index: any[]) {
       failed: count("execute.failure") + count("execute.unknown"),
       blocked: count("tool.blocked"),
       withdrawn: count("reconcile.withdrawn"),
+      check_problems: events.filter((e) => e.event === "checks").reduce((n, e) => n + (e.problems?.length ?? 0), 0),
     },
+    escalation: resolution?.escalation?.tier ?? null,
+    handover: resolution?.escalation?.handover ?? null,
     page: p0.length ? p0[p0.length - 1].event.replace("escalate.p0.", "") : null,
-    has_callback: !!callback,
-    callback_status: callback?.status ?? null,
-    judge: judge
-      ? {
-          outcome: judge.outcome_score,
-          judgement: judge.judgement_score,
-          critical: !!judge.critical_failure,
-          verdict: judge.verdict ?? null,
-        }
-      : null,
+    paged: p0.some((e) => e.event === "escalate.p0.call"),
+    callback: callback ? { status: callback.status ?? null, chosen_option: callback.chosen_option ?? null, decision: callback.decision ?? null } : null,
   };
 }
+type Row = ReturnType<typeof row>;
+
+// Ledger order: cases in flight first, then P0, P1, P2, then newest first.
+const URG: Record<string, number> = { P0: 0, P1: 1, P2: 2 };
+const order = (a: Row, b: Row) => {
+  const inFlight = (r: Row) => (r.status === "running" || r.status === "queued" ? 0 : 1);
+  if (inFlight(a) !== inFlight(b)) return inFlight(a) - inFlight(b);
+  const ua = URG[a.urgency ?? ""] ?? 3;
+  const ub = URG[b.urgency ?? ""] ?? 3;
+  if (ua !== ub) return ua - ub;
+  const ta = a.started_at ? Date.parse(a.started_at) : a.folder_mtime ?? 0;
+  const tb = b.started_at ? Date.parse(b.started_at) : b.folder_mtime ?? 0;
+  return tb - ta;
+};
+
+const allRows = (): Row[] =>
+  DIRS.flatMap((d, i) => {
+    const ids = idMap(d);
+    return foldersIn(d).map((f) => row(i, f, ids));
+  }).sort(order);
 
 function summary() {
-  const index = loadIndex();
-  const rows = caseFolders().map((f) => row(f, index));
+  const rows = allRows();
   const by: Record<string, number> = {};
   for (const r of rows) by[r.status] = (by[r.status] ?? 0) + 1;
-  const starts = rows.map((r) => r.started_at).filter(Boolean).map((t) => Date.parse(t!));
-  const ends = rows.map((r) => r.ended_at).filter(Boolean).map((t) => Date.parse(t!));
-  const running = rows.some((r) => r.status === "running" || r.status === "queued");
-  const first = starts.length ? Math.min(...starts) : null;
-  const last = running ? Date.now() : ends.length ? Math.max(...ends) : null;
-  const md = readText(path.join(OUT, "summary.md"));
-  const line = md?.match(/Cases: \d+\. Completed: \d+\.[^\n]*/)?.[0] ?? null;
-  const judged = rows.filter((r) => r.judge);
-  const mean = (k: "outcome" | "judgement") =>
-    judged.length ? Math.round((judged.reduce((s, r) => s + (r.judge![k] ?? 0), 0) / judged.length) * 10) / 10 : null;
+  const running = rows.some((r) => r.status === "running");
+  const now = Date.now();
+  const spans = rows
+    .filter((r) => r.started_at)
+    .map((r) => ({ a: Date.parse(r.started_at!), b: r.ended_at ? Date.parse(r.ended_at) : now }))
+    .filter((s) => !isNaN(s.a) && !isNaN(s.b))
+    .sort((x, y) => x.a - y.a);
+  // Elapsed: time the system spent with at least one case open (union of the case intervals, so two
+  // runs an hour apart do not count the hour between them).
+  let elapsed = 0;
+  let cur: { a: number; b: number } | null = null;
+  for (const s of spans) {
+    if (cur && s.a <= cur.b) cur.b = Math.max(cur.b, s.b);
+    else {
+      if (cur) elapsed += cur.b - cur.a;
+      cur = { ...s };
+    }
+  }
+  if (cur) elapsed += cur.b - cur.a;
+  // Parallelism as observed: the most cases that were between case.start and case.end at one moment.
+  const marks = spans.flatMap((s) => [{ t: s.a, d: 1 }, { t: s.b, d: -1 }]).sort((x, y) => x.t - y.t || x.d - y.d);
+  let open = 0;
+  let parallel = 0;
+  for (const m of marks) {
+    open += m.d;
+    parallel = Math.max(parallel, open);
+  }
   return {
-    out_dir: OUT,
-    total: Math.max(rows.length, index.length),
-    completed: rows.filter((r) => r.status !== "running" && r.status !== "queued").length,
+    dirs: DIRS.map((d) => path.basename(d)),
+    total: rows.length,
+    done: rows.filter((r) => r.ended_at).length,
+    running: rows.filter((r) => r.status === "running").length,
+    failed: (by.error ?? 0) + (by.blocked ?? 0),
     by_status: by,
-    elapsed: first && last ? Math.round((last - first) / 1000) : null,
-    running,
-    summary_line: line,
-    judge: judged.length ? { n: judged.length, outcome: mean("outcome"), judgement: mean("judgement"), critical: judged.filter((r) => r.judge!.critical).length } : null,
+    elapsed: spans.length ? Math.round(elapsed / 1000) : null,
+    parallel,
+    live: running,
   };
 }
 
-function caseDetail(folder: string) {
-  if (folder.includes("..") || folder.includes("/")) return null;
-  const dir = path.join(OUT, folder);
+function caseDetail(i: number, folder: string) {
+  if (!DIRS[i] || folder.includes("..") || folder.includes("/") || folder.includes("\\")) return null;
+  const dir = path.join(DIRS[i], folder);
   if (!fs.existsSync(dir)) return null;
   const events = readTrace(dir);
+  const r = row(i, folder, idMap(DIRS[i]));
+  const alert = DIRS.flatMap(alertsIn).find((a) => a.case_id === r.case_id || a.case_id === folder || (a.dir && path.resolve(a.dir) === dir)) ?? null;
   return {
-    summary: row(folder, loadIndex()),
+    summary: r,
     answer: readText(path.join(dir, "ANSWER.md")),
     reasoning: readText(path.join(dir, "REASONING.md")),
     events,
     resolution: resolutionOf(events),
     judge: readJson(path.join(dir, "JUDGE.json")),
     callback: readJson(path.join(dir, "callback.json")),
-    whatsapp: readJson(path.join(dir, "whatsapp_reply.json")),
+    whatsapp_reply: readJson(path.join(dir, "whatsapp_reply.json")),
+    message: readJson(path.join(dir, "message.json")),
+    alert,
   };
 }
 
@@ -218,18 +258,12 @@ const send = (res: http.ServerResponse, code: number, body: unknown) => {
 http
   .createServer((req, res) => {
     const url = new URL(req.url ?? "/", "http://x");
-    const run = url.searchParams.get("run");
-    OUT = run && /^[\w.-]+$/.test(run) && fs.existsSync(path.join(OUT_ROOT, run)) ? path.join(OUT_ROOT, run) : DEFAULT_OUT;
     try {
-      if (url.pathname === "/api/runs") return send(res, 200, { default: path.basename(DEFAULT_OUT), runs: runs() });
-      if (url.pathname === "/api/cases") {
-        const index = loadIndex();
-        return send(res, 200, caseFolders().map((f) => row(f, index)));
-      }
+      if (url.pathname === "/api/cases") return send(res, 200, allRows());
       if (url.pathname === "/api/summary") return send(res, 200, summary());
-      const m = url.pathname.match(/^\/api\/case\/([^/]+)$/);
+      const m = url.pathname.match(/^\/api\/case\/(\d+)\/([^/]+)$/);
       if (m) {
-        const d = caseDetail(decodeURIComponent(m[1]));
+        const d = caseDetail(Number(m[1]), decodeURIComponent(m[2]));
         return d ? send(res, 200, d) : send(res, 404, { error: "not found" });
       }
       send(res, 404, { error: "not found" });
@@ -237,4 +271,4 @@ http
       send(res, 500, { error: String(e) });
     }
   })
-  .listen(PORT, () => console.log(`dashboard api on :${PORT} reading ${OUT}`));
+  .listen(PORT, () => console.log(`dashboard api on :${PORT} reading ${DIRS.join(", ")}`));

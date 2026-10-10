@@ -1,39 +1,29 @@
 import { useState } from "react";
 import { usePoll } from "./api";
 import type { Row, Summary } from "./types";
-import { QueueBoard } from "./QueueBoard";
+import { Queue } from "./Queue";
 import { CaseView } from "./CaseView";
-import { Calls } from "./Calls";
 
-type Tab = "queue" | "case" | "calls";
+type Tab = "queue" | "case" | "event" | "system";
 
 export function App() {
   const [tab, setTab] = useState<Tab>("queue");
-  const [folder, setFolder] = useState<string | null>(null);
-  const [callFolder, setCallFolder] = useState<string | null>(null);
-  const [run, setRun] = useState<string>(() => new URLSearchParams(location.search).get("run") ?? "");
-  const q = run ? `?run=${encodeURIComponent(run)}` : "";
-  const rows = usePoll<Row[]>(`/api/cases${q}`) ?? [];
-  const summary = usePoll<Summary>(`/api/summary${q}`);
-  const runList = usePoll<{ default: string; runs: string[] }>("/api/runs", 10000);
-  const pickRun = (r: string) => {
-    setRun(r);
-    setFolder(null);
-    setCallFolder(null);
-    setTab("queue");
-    history.replaceState(null, "", r ? `?run=${encodeURIComponent(r)}` : location.pathname);
-  };
+  const [caseKey, setCaseKey] = useState<string | null>(null);
+  const [eventIndex, setEventIndex] = useState<number>(0);
+  const rows = usePoll<Row[]>("/api/cases", 2000) ?? [];
+  const summary = usePoll<Summary>("/api/summary", 2000);
+  const current = caseKey ? rows.find((r) => r.key === caseKey) ?? null : null;
 
-  const open = (f: string) => {
-    setFolder(f);
+  const openCase = (key: string) => {
+    setCaseKey(key);
     setTab("case");
     window.scrollTo({ top: 0 });
   };
-  const calls = (f: string | null) => {
-    setCallFolder(f);
-    setTab("calls");
+  const openEvent = (index: number) => {
+    setEventIndex(index);
+    setTab("event");
+    window.scrollTo({ top: 0 });
   };
-  const caseId = folder ? rows.find((r) => r.folder === folder)?.case_id ?? folder : null;
 
   return (
     <div className="shell">
@@ -44,21 +34,20 @@ export function App() {
         </div>
         <nav className="nav">
           <button data-on={tab === "queue"} onClick={() => setTab("queue")}>Queue</button>
-          <button data-on={tab === "case"} disabled={!folder} onClick={() => setTab("case")}>
-            Case{caseId ? <span className="mono"> {caseId}</span> : ""}
+          <button data-on={tab === "case" || tab === "event"} disabled={!caseKey} onClick={() => setTab("case")}>
+            Case{current ? <span className="mono"> {current.case_id}</span> : ""}
           </button>
-          <button data-on={tab === "calls"} onClick={() => calls(null)}>Calls</button>
+          <button data-on={tab === "system"} onClick={() => setTab("system")}>System</button>
         </nav>
         <div className="bar-end mono">
-          {summary?.running && <span className="live-t">● live</span>}
-          <select className="run" value={run || runList?.default || ""} onChange={(e) => pickRun(e.target.value === runList?.default ? "" : e.target.value)} aria-label="Run folder">
-            {(runList?.runs ?? [run || runList?.default || ""]).map((r) => <option key={r} value={r}>out/{r}</option>)}
-          </select>
+          {summary?.live && <span className="live-t">● live</span>}
+          <span className="muted">{summary?.dirs.map((d) => `out/${d}`).join(" + ")}</span>
         </div>
       </header>
-      {tab === "queue" && <QueueBoard rows={rows} summary={summary} onOpen={open} />}
-      {tab === "case" && folder && <CaseView q={q} folder={folder} onBack={() => setTab("queue")} onCalls={calls} />}
-      {tab === "calls" && <Calls q={q} rows={rows} initial={callFolder} onOpenCase={open} />}
+      {tab === "queue" && <Queue rows={rows} summary={summary} onOpen={openCase} />}
+      {tab === "case" && caseKey && <CaseView caseKey={caseKey} onBack={() => setTab("queue")} onEvent={openEvent} />}
+      {tab === "event" && caseKey && <p className="page muted">Event {eventIndex}</p>}
+      {tab === "system" && <p className="page muted">System</p>}
     </div>
   );
 }

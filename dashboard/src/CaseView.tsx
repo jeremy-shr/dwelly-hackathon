@@ -6,8 +6,10 @@ import { Md, pick, sections } from "./md";
 
 const secs = (ms: number | null) => (ms == null ? "" : ms < 1000 ? `+${ms}ms` : `+${(ms / 1000).toFixed(1)}s`);
 
-export function CaseView({ q, folder, onBack, onCalls }: { q: string; folder: string; onBack: () => void; onCalls: (f: string) => void }) {
-  const d = usePoll<CaseDetail>(`/api/case/${encodeURIComponent(folder)}${q}`, 1500);
+export function CaseView({ caseKey, onBack }: { caseKey: string; onBack: () => void; onEvent: (i: number) => void }) {
+  const folder = caseKey;
+  const onCalls = (_f: string) => {};
+  const d = usePoll<CaseDetail>(`/api/case/${caseKey}`, 1500);
   const list = useMemo(() => (d ? steps(d.events) : []), [d]);
   const [sel, setSel] = useState<string | null>(null);
 
@@ -82,7 +84,7 @@ function StepDetail({ step, d, ans, onCalls }: { step: Step; d: CaseDetail; ans:
           <h3>What came in</h3>
           <dl className="kv">
             <dt>Channel</dt><dd>{clean(s0?.channel) || "–"}</dd>
-            <dt>Received</dt><dd className="mono">{d.summary.received_at ? new Date(d.summary.received_at).toLocaleString("en-GB") : "–"}</dd>
+            <dt>Received</dt><dd className="mono">{d.summary.started_at ?? "–"}</dd>
             <dt>Files</dt><dd className="mono">{(s0?.files ?? []).join(", ") || "–"}</dd>
           </dl>
           <h4>Flags raised by code before any model ran</h4>
@@ -259,7 +261,7 @@ function StepDetail({ step, d, ans, onCalls }: { step: Step; d: CaseDetail; ans:
         <>
           <h3>Outcome written to disk</h3>
           <dl className="kv">
-            <dt>Final state</dt><dd>{d.summary.final_state ?? "–"}</dd>
+            <dt>Final state</dt><dd>{d.summary.status}</dd>
             <dt>Time</dt><dd className="mono">{d.summary.seconds != null ? `${d.summary.seconds} s` : "running"}</dd>
             <dt>Files</dt><dd className="mono">ANSWER.md · REASONING.md · trace.jsonl</dd>
           </dl>
