@@ -3,7 +3,7 @@ import http from "node:http";
 import fs from "node:fs";
 import path from "node:path";
 import crypto from "node:crypto";
-import { caseContext, meaningful } from "../voice/context.js";
+import { caseContext, meaningful, shortAddress, speakIds, spokenDeadline } from "../voice/context.js";
 import { playFor } from "../voice/playbook.js";
 import { spawn } from "node:child_process";
 import { sendMessage, validTwilioSignature } from "./transports/whatsapp.js";
@@ -150,22 +150,47 @@ function callBrief(body: any): Record<string, string> {
   const res = ctx.resolution ?? {};
   const play = playFor(ctx.flags);
   const pick = (...vals: unknown[]) => vals.find(meaningful) as string | undefined;
-  const reported = ctx.report ? `The tenant reported: "${ctx.report}"` : undefined;
+  const tenant = pick(body.tenant_name, ctx.tenant);
+  // Spoken form: ids become names, "the tenant" becomes their name when known.
+  const resText = [res.summaryForHuman, res.decision, res.escalation?.decisionRequired, body.summary, body.decision_required].filter(meaningful).join(" ");
+  const say = (t: string) => { const s = speakIds(t, resText); return tenant ? s.replace(/\bthe tenant\b/gi, tenant) : s; };
+  const property = pick(body.property, ctx.property);
   const assessed = pick(body.issue, body.summary, res.summaryForHuman);
   const unknowns = [...(res.missingInformation ?? []), ...(res.conflicts ?? []).map((c: any) => c.facts)].filter(meaningful);
+  // P0: the call itself is the urgency, so no deadline is spoken. P1: the deadline in words.
+  const tier = body.tier === "P1" ? "P1" : "P0";
+  const deadline = tier === "P1" ? spokenDeadline(body.deadline) : undefined;
+
+  // What the pipeline needs from a person comes first; the per-flag playbook is only a fallback.
+  // Playbook options are dropped when the pipeline has already booked a contractor (they would offer to book one).
+  const needed = pick(body.decision_required, res.escalation?.decisionRequired);
+  const [askSentence, ...restAsk] = needed ? say(needed).split(/(?<=\.)\s+/) : [];
+  // Option 1 is one short sentence: the first clause of what the pipeline asks a person to do.
+  const firstAsk = askSentence ? askSentence.split(/;\s+|,\s+and\s+(?=arrange|confirm|check)/)[0].replace(/[.;,]*$/, ".") : undefined;
+  const fromPipeline = firstAsk && !/^Review the proposed actions/i.test(firstAsk);
+  const booked = ctx.executed.some((t) => /book_contractor|assign_provider/.test(t));
+  const options = pick(body.options) ?? (fromPipeline
+    ? `Option 1: you ${firstAsk.charAt(0).toLowerCase()}${firstAsk.slice(1)} Option 2: you attend the property yourself. Option 3: you can't take it, so we pass it straight to the next on-call manager.`
+    : booked ? "Option 1: you phone the tenant now to check everyone is safe and confirm the contractor has accepted. Option 2: you attend yourself. Option 3: we pass it to the next on-call manager." : play.options);
+
   return {
     case_id: caseId,
     recipient_role: (pick(body.recipient_role) ?? "property manager").replace("_", " "),
     recipient_name: pick(body.recipient_name) ?? "there",
-    property: pick(body.property, ctx.property) ?? "one of our managed properties (the address is in the case file)",
-    tenant_name: pick(body.tenant_name) ?? "the tenant",
-    issue: [reported, assessed].filter(Boolean).join(" Our assessment: ") || "An urgent case needs a decision; the details are in the case file.",
-    why_urgent: (pick(body.why_urgent, res.escalation?.reason && !/^Automated checks failed/.test(res.escalation.reason) ? res.escalation.reason : undefined) ?? play.why_urgent) + (body.deadline ? ` A decision is needed by ${body.deadline}.` : ""),
+    property: property ?? "one of our managed properties (the address is in the case file)",
+    property_short: property ? shortAddress(property) : "one of our properties",
+    headline: play.headline,
+    tenant_name: tenant ?? "the tenant",
+    issue: say(assessed ?? (ctx.report ? `The tenant reported: "${ctx.report.slice(0, 250)}"` : "An urgent case needs a decision; the details are in the case file.")),
+    tenant_words: ctx.report ? ctx.report.slice(0, 250) : "not available",
+    already_done: ctx.done.length ? `Already done, say it is done and never offer it: ${ctx.done.join("; ")}.` : "Nothing has been actioned yet.",
+    also_needed: restAsk.length ? restAsk.join(" ") : "nothing else",
+    why_urgent: say(pick(body.why_urgent, res.escalation?.reason && !/^Automated checks failed/.test(res.escalation.reason) ? res.escalation.reason : undefined) ?? play.why_urgent) + (deadline ? ` A decision is needed ${deadline}.` : ""),
     risk_if_delayed: pick(body.risk_if_delayed) ?? play.risk_if_delayed,
-    facts_uncertain: pick(body.facts_uncertain) ?? (unknowns.length ? unknowns.slice(0, 3).join(". ") : "Anything not in this summary is unconfirmed."),
-    options: pick(body.options) ?? play.options,
-    recommended_option: pick(body.recommended_option) ?? play.recommended_option,
-    recommendation_reason: pick(body.recommendation_reason) ?? play.recommendation_reason,
+    facts_uncertain: say(pick(body.facts_uncertain) ?? (unknowns.length ? unknowns.slice(0, 3).join(". ") : "Anything not in this summary is unconfirmed.")),
+    options: say(options),
+    recommended_option: pick(body.recommended_option) ?? (fromPipeline || booked ? "Option 1" : play.recommended_option),
+    recommendation_reason: pick(body.recommendation_reason) ?? (fromPipeline ? "it is exactly what the case needs from a person right now" : booked ? "the contractor is already booked, so what's missing is a person checking everyone is safe" : play.recommendation_reason),
     authority_limit: pick(body.authority_limit) ?? "the agency's emergency spending limit",
   };
 }
