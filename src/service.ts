@@ -93,6 +93,8 @@ function receiveMessage(channel: string, from: string, body: string): { id: stri
     const n = fs.readdirSync(path.join(LIVE_CASES, open)).filter((f) => f.startsWith("reply-")).length + 1;
     fs.writeFileSync(path.join(LIVE_CASES, open, `reply-${String(n).padStart(2, "0")}.json`), JSON.stringify({ channel, received_at: now, from, message: `Follow-up message from the same sender: ${body}` }, null, 2));
     console.log(`inbound ${channel} from ${from}: added to case ${open}`);
+    const held = heldPages.get(open);
+    if (held) { holdPage(open, held.body, held.dir, EXTEND_MS); console.log(`page hold for ${open} extended: re-running with the tenant's details`); }
     answerLiveCase(open, channel, from, true);
     return { id: open, threaded: true };
   }
@@ -153,18 +155,27 @@ function answerLiveCase(id: string, channel: string, from: string, rerun = false
     const events = fs.existsSync(path.join(dir, "trace.jsonl")) ? fs.readFileSync(path.join(dir, "trace.jsonl"), "utf8").split("\n").filter(Boolean).map((l) => JSON.parse(l)) : [];
     const staged = new Map(events.filter((e) => e.event === "tool.staged" && e.tool === "send_message").map((e) => [e.actionId, e.input]));
     const sent = events.filter((e) => e.event === "execute.success" && staged.has(e.actionId)).map((e) => staged.get(e.actionId))
-      .filter((m: any) => /tenant|reporter|caller/i.test(String(m?.to_party ?? "")));
+      .filter((m: any) => toSender(m, from));
     for (const m of sent) {
       const result = await sendMessage(channel, from, String(m.body ?? ""));
       fs.appendFileSync(path.join(dir, "replies.jsonl"), JSON.stringify({ ts: new Date().toISOString(), channel, to: from, body: m.body, result }) + "\n");
       console.log(`reply to ${from} for ${id}: ${result.ok ? "sent" : result.error}`);
     }
     if (!sent.length) console.log(`no tenant message executed for ${id} (runner exit ${code}); nothing sent`);
+    // The re-run finished without paging again: release the held page now with the original escalation.
+    const held = heldPages.get(id);
+    if (rerun && held) { clearTimeout(held.timer); heldPages.delete(id); void firePage({ ...held.body, rerun_without_page: true }, held.dir); }
   });
 }
 
-const HOLD_MS = Number(process.env.PAGE_HOLD_MS ?? 90_000);
-const heldPages = new Map<string, ReturnType<typeof setTimeout>>();
+const HOLD_MS = Number(process.env.PAGE_HOLD_MS ?? 120_000);
+const EXTEND_MS = 120_000; // a tenant reply restarts the hold so the re-run with their details can page instead
+type Held = { timer: ReturnType<typeof setTimeout>; body: any; dir: string };
+const heldPages = new Map<string, Held>();
+function holdPage(caseId: string, body: any, dir: string, ms: number) {
+  const prev = heldPages.get(caseId); if (prev) clearTimeout(prev.timer);
+  heldPages.set(caseId, { body, dir, timer: setTimeout(() => { heldPages.delete(caseId); void firePage({ ...body, hold_expired: true }, dir); }, ms) });
+}
 /** P0: WhatsApp + call. P1: WhatsApp only. No tier (older callers) is treated as P0. */
 async function firePage(body: any, dir: string) {
   const call = body.tier === "P1" ? Promise.resolve({ placed: false, reason: "P1: WhatsApp only" }) : placeCall(body);
@@ -172,6 +183,17 @@ async function firePage(body: any, dir: string) {
   fs.appendFileSync(path.join(dir, "calls.jsonl"), JSON.stringify({ ts: new Date().toISOString(), request: body, result, whatsapp }) + "\n");
   console.log(`page for ${body.case_id}: call ${(result as any).placed ? "placed" : "not placed"}, whatsapp ${whatsapp.sent ? "sent" : "not sent"}${body.hold_expired ? " (hold expired)" : ""}`);
   return { ...result, whatsapp };
+}
+
+/**
+ * Whether a message the pipeline executed is addressed to the person who wrote in. Messages to other parties
+ * (the tenant on file, the landlord, a contractor) stay recorded in the case and are never forwarded to the sender.
+ */
+const digits = (v: unknown) => String(v ?? "").replace(/\D/g, "").slice(-10);
+function toSender(m: any, sender: string): boolean {
+  const party = String(m?.to_party ?? ""), ref = String(m?.to_ref ?? "");
+  if (!/tenant|reporter|caller|sender|enquirer/i.test(party)) return false;
+  return ref === "" || /reporter|sender|caller|unknown|whatsapp/i.test(ref) || (digits(ref).length >= 9 && digits(ref) === digits(sender));
 }
 
 /** Folder for a case id in the batch or live output, if it exists. */
@@ -234,8 +256,8 @@ function actOnDecision(caseId: string, decision: { chosen_option: string; decisi
     const events = fs.existsSync(path.join(out, "trace.jsonl")) ? fs.readFileSync(path.join(out, "trace.jsonl"), "utf8").split("\n").filter(Boolean).map((l) => JSON.parse(l)) : [];
     const staged = new Map(events.filter((e) => e.event === "tool.staged").map((e) => [e.actionId, e]));
     const executed = events.filter((e) => e.event === "execute.success" && staged.has(e.actionId)).map((e) => staged.get(e.actionId));
-    const tenantMsgs = executed.filter((e: any) => e.tool === "send_message" && /tenant|reporter|caller/i.test(String(e.input?.to_party ?? ""))).map((e: any) => String(e.input?.body ?? ""));
     const contact = tenantContact(caseId);
+    const tenantMsgs = executed.filter((e: any) => e.tool === "send_message" && (contact ? toSender(e.input, contact.to) : /tenant|reporter|caller/i.test(String(e.input?.to_party ?? "")))).map((e: any) => String(e.input?.body ?? ""));
     const sent = [];
     for (const body of tenantMsgs) {
       const result = contact ? await sendMessage(contact.channel, contact.to, body) : { ok: false, error: "no tenant contact (set DEMO_TENANT_WHATSAPP)" };
@@ -450,7 +472,9 @@ http.createServer(async (req, res) => {
           })),
         };
       }) : [];
-      return json(res, 200, { cases });
+      // Live cases (tenant messages arriving now) first, newest at the top; the batch keeps its order below.
+      const live = (cases as any[]).filter((c) => String(c.id).startsWith("live-")).sort((a, b) => String(b.id).localeCompare(String(a.id)));
+      return json(res, 200, { cases: [...live, ...(cases as any[]).filter((c) => !String(c.id).startsWith("live-"))] });
     }
     const oc = url.pathname.match(/^\/api\/oncall\/([^/]+)$/);
     if (req.method === "GET" && oc) { const t = onCallTimeline(decodeURIComponent(oc[1])); return t ? json(res, 200, t) : json(res, 404, { error: "no such case" }); }
@@ -468,14 +492,14 @@ http.createServer(async (req, res) => {
     if (req.method === "POST" && url.pathname === "/api/escalations") {
       const body = JSON.parse((await readBody(req)) || "{}");
       const held = heldPages.get(String(body.case_id));
-      if (held) { clearTimeout(held); heldPages.delete(String(body.case_id)); }
+      if (held) { clearTimeout(held.timer); heldPages.delete(String(body.case_id)); }
       // A live tenant report without an identified property: hold the call while the pipeline's reply asks for
       // the address; the re-run with the tenant's answer pages again with full details. Never held twice, never
       // longer than HOLD_MS, so a safety case cannot stall.
       if (!held && fs.existsSync(path.join(LIVE_CASES, String(body.case_id))) && !meaningful(callBrief(body).property_short.replace(/^one of our properties$/, ""))) {
         const caseId = String(body.case_id);
         const dir = caseDir(caseId) ?? path.join(LIVE_OUT, caseId); fs.mkdirSync(dir, { recursive: true });
-        heldPages.set(caseId, setTimeout(() => { heldPages.delete(caseId); void firePage({ ...body, hold_expired: true }, dir); }, HOLD_MS));
+        holdPage(caseId, body, dir, HOLD_MS);
         fs.appendFileSync(path.join(dir, "calls.jsonl"), JSON.stringify({ ts: new Date().toISOString(), request: body, result: { placed: false, held_ms: HOLD_MS, reason: "property not identified yet; waiting for the tenant's details" } }) + "\n");
         console.log(`page held for ${caseId}: property not identified, waiting up to ${HOLD_MS / 1000}s`);
         return json(res, 200, { placed: false, held: true });
