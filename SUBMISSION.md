@@ -1,8 +1,8 @@
 # Submission Checklist
 
-- Team name:
+- Team name: Fabriq Mafia
 - Track: Property Management
-- Team members:
+- Team members: Jeremy Shorter, Vedaant Kavasseri, Harry Naden-Caldwell
 - Repository URL: https://github.com/jeremy-shr/dwelly-hackathon
 - Code-freeze commit hash:
 - Reality Test results path: `ANSWERS/`
