@@ -74,17 +74,38 @@ async function recordAlertReply(from: string, text: string): Promise<boolean> {
   return true;
 }
 
-/** Writes the message as a live case and starts answering it. Returns the case id. */
-function receiveMessage(channel: string, from: string, body: string): string {
+/** An open live case from this sender in the last 30 minutes, so a follow-up message joins the same case. */
+function openCaseFor(from: string): string | undefined {
+  if (!fs.existsSync(LIVE_CASES)) return undefined;
+  const cutoff = Date.now() - 30 * 60_000;
+  return fs.readdirSync(LIVE_CASES).filter((d) => d.startsWith("live-") && !d.endsWith("-decision")).sort().reverse().find((d) => {
+    try { const m = JSON.parse(fs.readFileSync(path.join(LIVE_CASES, d, "message.json"), "utf8")); return m.from === from && Date.parse(m.received_at) > cutoff; } catch { return false; }
+  });
+}
+
+/** Writes the message as a live case (or adds it to the sender's open case) and (re)answers it. Returns the case id. */
+function receiveMessage(channel: string, from: string, body: string): { id: string; threaded: boolean } {
   from = from.replace(/^whatsapp:/, "");
-  const id = `live-${new Date().toISOString().replace(/[:.]/g, "-")}`;
+  const now = new Date().toISOString();
+  const open = openCaseFor(from);
+  if (open) {
+    // reply-NN.json sorts after message.json, so the case reads in order.
+    const n = fs.readdirSync(path.join(LIVE_CASES, open)).filter((f) => f.startsWith("reply-")).length + 1;
+    fs.writeFileSync(path.join(LIVE_CASES, open, `reply-${String(n).padStart(2, "0")}.json`), JSON.stringify({ channel, received_at: now, from, message: `Follow-up message from the same sender: ${body}` }, null, 2));
+    console.log(`inbound ${channel} from ${from}: added to case ${open}`);
+    answerLiveCase(open, channel, from, true);
+    return { id: open, threaded: true };
+  }
+  const id = `live-${now.replace(/[:.]/g, "-")}`;
   const dir = path.join(LIVE_CASES, id); fs.mkdirSync(dir, { recursive: true });
-  fs.writeFileSync(path.join(dir, "message.json"), JSON.stringify({ channel, received_at: new Date().toISOString(), from, message: body }, null, 2));
+  fs.writeFileSync(path.join(dir, "message.json"), JSON.stringify({ channel, received_at: now, from, message: body }, null, 2));
   console.log(`inbound ${channel} from ${from}: case ${id}`);
   answerLiveCase(id, channel, from);
-  return id;
+  return { id, threaded: false };
 }
-const ackText = (id: string) => `Thanks, Northbridge Lettings has received your message (ref ${id.slice(5, 24)}). We're looking at it now and will reply here shortly.`;
+const ackText = (id: string, threaded = false) => threaded
+  ? `Thanks, we've added that to your report (ref ${id.slice(5, 24)}).`
+  : `Thanks, Northbridge Lettings has received your message (ref ${id.slice(5, 24)}). We're looking at it now and will reply here shortly.`;
 
 /**
  * WHATSAPP_POLL=1: instead of the sandbox's console-only webhook, poll Twilio for new inbound WhatsApps to
@@ -103,8 +124,8 @@ function pollWhatsApp() {
         if (seen.has(m.sid) || m.direction !== "inbound" || Date.parse(m.date_created) < since - 5000) continue;
         seen.add(m.sid);
         if (await recordAlertReply(m.from, m.body ?? "")) continue;
-        const id = receiveMessage("whatsapp", m.from, m.body ?? "");
-        void sendMessage("whatsapp", m.from, ackText(id));
+        const r = receiveMessage("whatsapp", m.from, m.body ?? "");
+        void sendMessage("whatsapp", m.from, ackText(r.id, r.threaded));
       }
     } catch (e) { console.log("whatsapp poll error:", String(e).slice(0, 120)); }
   }, 4000);
@@ -116,8 +137,9 @@ function pollWhatsApp() {
  * the tenant whatever messages the pipeline actually executed for them, on the channel they wrote in on.
  * A P0 rings the on-call manager through ESCALATION_WEBHOOK_URL, pointed back at this service.
  */
-function answerLiveCase(id: string, channel: string, from: string) {
+function answerLiveCase(id: string, channel: string, from: string, rerun = false) {
   const args = ["src/run.ts", "--cases", LIVE_CASES, "--only", id, "--out", LIVE_OUT, "--deadline", "5"];
+  if (rerun) args.push("--force");
   if (process.env.DATA_DIR) args.push("--data", process.env.DATA_DIR);
   if (!process.env.ANTHROPIC_API_KEY) args.push("--mock-model");
   const env = { ...process.env, ESCALATION_WEBHOOK_URL: process.env.ESCALATION_WEBHOOK_URL ?? `http://localhost:${PORT}/api/escalations` };
@@ -139,6 +161,17 @@ function answerLiveCase(id: string, channel: string, from: string) {
     }
     if (!sent.length) console.log(`no tenant message executed for ${id} (runner exit ${code}); nothing sent`);
   });
+}
+
+const HOLD_MS = Number(process.env.PAGE_HOLD_MS ?? 90_000);
+const heldPages = new Map<string, ReturnType<typeof setTimeout>>();
+/** P0: WhatsApp + call. P1: WhatsApp only. No tier (older callers) is treated as P0. */
+async function firePage(body: any, dir: string) {
+  const call = body.tier === "P1" ? Promise.resolve({ placed: false, reason: "P1: WhatsApp only" }) : placeCall(body);
+  const [result, whatsapp] = await Promise.all([call, alertWhatsApp(body, dir).catch((e) => ({ sent: false, error: String(e) }))]);
+  fs.appendFileSync(path.join(dir, "calls.jsonl"), JSON.stringify({ ts: new Date().toISOString(), request: body, result, whatsapp }) + "\n");
+  console.log(`page for ${body.case_id}: call ${(result as any).placed ? "placed" : "not placed"}, whatsapp ${whatsapp.sent ? "sent" : "not sent"}${body.hold_expired ? " (hold expired)" : ""}`);
+  return { ...result, whatsapp };
 }
 
 /** Folder for a case id in the batch or live output, if it exists. */
@@ -186,7 +219,8 @@ function actOnDecision(caseId: string, decision: { chosen_option: string; decisi
   appendFollowup(dir, "acting", { followup_case: id });
   console.log(`acting on decision for ${caseId} (option ${decision.chosen_option}) as ${id}`);
 
-  const args = ["src/run.ts", "--cases", LIVE_CASES, "--only", id, "--out", LIVE_OUT, "--deadline", "5", "--force"];
+  const followupOut = path.join(dir, "followup");
+  const args = ["src/run.ts", "--cases", LIVE_CASES, "--only", id, "--out", followupOut, "--deadline", "5", "--force"];
   if (process.env.DATA_DIR) args.push("--data", process.env.DATA_DIR);
   if (!process.env.ANTHROPIC_API_KEY) args.push("--mock-model");
   const { ESCALATION_WEBHOOK_URL: _noPage, ...env } = process.env;
@@ -194,7 +228,7 @@ function actOnDecision(caseId: string, decision: { chosen_option: string; decisi
   let log = "";
   child.stdout.on("data", (d) => (log += d)); child.stderr.on("data", (d) => (log += d));
   child.on("close", async (code) => {
-    const out = path.join(LIVE_OUT, id);
+    const out = path.join(followupOut, id);
     fs.mkdirSync(out, { recursive: true });
     fs.writeFileSync(path.join(out, "runner.log"), log);
     const events = fs.existsSync(path.join(out, "trace.jsonl")) ? fs.readFileSync(path.join(out, "trace.jsonl"), "utf8").split("\n").filter(Boolean).map((l) => JSON.parse(l)) : [];
@@ -433,13 +467,22 @@ http.createServer(async (req, res) => {
     }
     if (req.method === "POST" && url.pathname === "/api/escalations") {
       const body = JSON.parse((await readBody(req)) || "{}");
+      const held = heldPages.get(String(body.case_id));
+      if (held) { clearTimeout(held); heldPages.delete(String(body.case_id)); }
+      // A live tenant report without an identified property: hold the call while the pipeline's reply asks for
+      // the address; the re-run with the tenant's answer pages again with full details. Never held twice, never
+      // longer than HOLD_MS, so a safety case cannot stall.
+      if (!held && fs.existsSync(path.join(LIVE_CASES, String(body.case_id))) && !meaningful(callBrief(body).property_short.replace(/^one of our properties$/, ""))) {
+        const caseId = String(body.case_id);
+        const dir = caseDir(caseId) ?? path.join(LIVE_OUT, caseId); fs.mkdirSync(dir, { recursive: true });
+        heldPages.set(caseId, setTimeout(() => { heldPages.delete(caseId); void firePage({ ...body, hold_expired: true }, dir); }, HOLD_MS));
+        fs.appendFileSync(path.join(dir, "calls.jsonl"), JSON.stringify({ ts: new Date().toISOString(), request: body, result: { placed: false, held_ms: HOLD_MS, reason: "property not identified yet; waiting for the tenant's details" } }) + "\n");
+        console.log(`page held for ${caseId}: property not identified, waiting up to ${HOLD_MS / 1000}s`);
+        return json(res, 200, { placed: false, held: true });
+      }
       const dir = [OUT, LIVE_OUT].map((d) => path.join(d, String(body.case_id ?? "unknown"))).find((d) => fs.existsSync(d)) ?? path.join(OUT, String(body.case_id ?? "unknown"));
       fs.mkdirSync(dir, { recursive: true });
-      // P0: WhatsApp + call. P1: WhatsApp only. No tier (older callers) is treated as P0.
-      const call = body.tier === "P1" ? Promise.resolve({ placed: false, reason: "P1: WhatsApp only" }) : placeCall(body);
-      const [result, whatsapp] = await Promise.all([call, alertWhatsApp(body, dir).catch((e) => ({ sent: false, error: String(e) }))]);
-      fs.appendFileSync(path.join(dir, "calls.jsonl"), JSON.stringify({ ts: new Date().toISOString(), request: body, result, whatsapp }) + "\n");
-      return json(res, 200, { ...result, whatsapp });
+      return json(res, 200, await firePage(body, dir));
     }
     if (req.method === "POST" && url.pathname === "/api/inbound") {
       const raw = await readBody(req);
@@ -450,10 +493,10 @@ http.createServer(async (req, res) => {
         if (process.env.PUBLIC_URL && !validTwilioSignature(`${process.env.PUBLIC_URL}/api/inbound`, p, req.headers["x-twilio-signature"] as string | undefined)) return json(res, 403, { error: "bad Twilio signature" });
         from = p.get("From") ?? ""; body = p.get("Body") ?? ""; channel = from.startsWith("whatsapp:") ? "whatsapp" : "sms";
       }
-      const id = receiveMessage(channel, from, body);
+      const r = receiveMessage(channel, from, body);
       // Immediate acknowledgement only; the substantive reply is whatever the pipeline decides to send.
       res.writeHead(200, { "content-type": "text/xml" });
-      return res.end(`<Response><Message>${ackText(id)}</Message></Response>`);
+      return res.end(`<Response><Message>${ackText(r.id, r.threaded)}</Message></Response>`);
     }
     if (req.method === "POST" && url.pathname === "/api/webhooks/elevenlabs") {
       const raw = await readBody(req);
