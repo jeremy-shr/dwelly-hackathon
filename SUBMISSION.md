@@ -7,7 +7,7 @@
 - Code-freeze commit hash:
 - Reality Test results path: `ANSWERS/`
 - Demo video path: `demo/dwelly-demo.mp4`
-- LinkedIn post URL:
+- LinkedIn post URL: https://lnkd.in/p/ej2BVZfJ
 - X post URL:
 
 ## Required Repo Contents
