@@ -204,7 +204,13 @@ const digits = (v: unknown) => String(v ?? "").replace(/\D/g, "").slice(-10);
 function toSender(m: any, sender: string): boolean {
   const party = String(m?.to_party ?? ""), ref = String(m?.to_ref ?? "");
   if (!/tenant|reporter|caller|sender|enquirer/i.test(party)) return false;
-  return ref === "" || /reporter|sender|caller|unknown|whatsapp/i.test(ref) || (digits(ref).length >= 9 && digits(ref) === digits(sender));
+  if (ref === "" || /reporter|sender|caller|unknown|whatsapp/i.test(ref) || (digits(ref).length >= 9 && digits(ref) === digits(sender))) return true;
+  // A tenancy reference (TEN-2006) counts as the sender when that tenancy's phone on file is the sender's number.
+  try {
+    const rows = JSON.parse(fs.readFileSync(path.join(process.env.DATA_DIR ?? "", "tenancies.json"), "utf8"));
+    const t = rows.find((r: any) => r.id === ref);
+    return Boolean(t?.tenants?.some((p: any) => digits(p.phone).length >= 9 && digits(p.phone) === digits(sender)));
+  } catch { return false; }
 }
 
 /** Folder for a case id in the batch or live output, if it exists. */
