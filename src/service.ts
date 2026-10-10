@@ -13,7 +13,8 @@ import { sendMessage, validTwilioSignature } from "./transports/whatsapp.js";
  *   GET  /api/cases/:id            handover pack (from the run output)
  *   POST /api/escalations          P0: WhatsApp alert + outbound call to the on-call manager; P1: WhatsApp only. { tier, case_id, to_number?, summary, decision_required, deadline, recipient_role?, property?, options?, ... } -> places the ElevenLabs outbound call
  *   POST /api/escalations/preview  same body -> the call brief the agent would get (no call placed)
- *   POST /api/webhooks/elevenlabs  post-call webhook (HMAC verified) -> writes <OUT>/<case>/callback.json
+ *   POST /api/webhooks/elevenlabs  post-call webhook (HMAC verified) -> writes <case>/callback.json; a decided call is acted on
+ *   GET  /api/oncall/:id           on-call panel timeline: page, call decision, WhatsApp reply, follow-through steps
  *   GET  /                         live board (public/board.html)
  *   GET  /api/status               per-case status derived from trace files
  *   POST /api/inbound              Twilio SMS/WhatsApp webhook (form-encoded From/Body) or JSON -> writes a case into cases/live/,
@@ -68,6 +69,7 @@ async function recordAlertReply(from: string, text: string): Promise<boolean> {
   fs.mkdirSync(alert.dir, { recursive: true });
   fs.writeFileSync(path.join(alert.dir, "whatsapp_reply.json"), JSON.stringify(reply, null, 2));
   console.log(`whatsapp reply for ${alert.case_id}: option=${reply.chosen_option}`);
+  if (option) actOnDecision(alert.case_id, { chosen_option: option, decision: `Chosen by WhatsApp reply: "${text.slice(0, 200)}"`, source: "by WhatsApp" });
   await sendMessage("whatsapp", from, option ? `Recorded: Option ${option} for ${alert.case_id}. The team will action it and update you.` : `Noted for ${alert.case_id}: "${text.slice(0, 120)}". A colleague will follow up.`);
   return true;
 }
@@ -137,6 +139,93 @@ function answerLiveCase(id: string, channel: string, from: string) {
     }
     if (!sent.length) console.log(`no tenant message executed for ${id} (runner exit ${code}); nothing sent`);
   });
+}
+
+/** Folder for a case id in the batch or live output, if it exists. */
+const caseDir = (id: string) => [OUT, LIVE_OUT].map((d) => path.join(d, id)).find((d) => fs.existsSync(d));
+
+/** Tenant contact for follow-through: the live case's sender, else DEMO_TENANT_WHATSAPP (sample tenants are fictional). */
+function tenantContact(caseId: string): { channel: string; to: string } | undefined {
+  try {
+    const m = JSON.parse(fs.readFileSync(path.join(LIVE_CASES, caseId, "message.json"), "utf8"));
+    if (m.from) return { channel: m.channel === "sms" ? "sms" : "whatsapp", to: String(m.from) };
+  } catch { /* not a live case */ }
+  return process.env.DEMO_TENANT_WHATSAPP ? { channel: "whatsapp", to: process.env.DEMO_TENANT_WHATSAPP } : undefined;
+}
+
+function appendFollowup(dir: string, step: string, data: Record<string, unknown> = {}) {
+  fs.appendFileSync(path.join(dir, "followup.jsonl"), JSON.stringify({ ts: new Date().toISOString(), step, ...data }) + "\n");
+}
+
+/**
+ * Acting on the manager's decision (demo path only; never runs in the judged run because it needs the voice
+ * service). The decision becomes a new event on a copy of the case, and the normal runner, with its guards and
+ * checks, decides what happens next. The tenant then gets the message the pipeline actually executed.
+ * The follow-up run never pages again (ESCALATION_WEBHOOK_URL is removed for it).
+ */
+const followedUp = new Set<string>();
+function actOnDecision(caseId: string, decision: { chosen_option: string; decision: string | null; source: string }) {
+  const dir = caseDir(caseId);
+  if (!dir || followedUp.has(caseId)) return;
+  followedUp.add(caseId);
+  const src = CASES_DIRS.map((d) => path.join(path.resolve(d), caseId)).find((d) => fs.existsSync(d));
+  if (!src) { appendFollowup(dir, "skipped", { reason: "original case files not found" }); return; }
+  const id = `${caseId}-decision`;
+  const dst = path.join(LIVE_CASES, id);
+  fs.rmSync(dst, { recursive: true, force: true });
+  fs.cpSync(src, dst, { recursive: true });
+  const answer = fs.existsSync(path.join(dir, "ANSWER.md")) ? fs.readFileSync(path.join(dir, "ANSWER.md"), "utf8") : "";
+  const done = answer.match(/## Actions taken\n([\s\S]*?)\n## /)?.[1]?.trim() ?? "(see the earlier case record)";
+  fs.writeFileSync(path.join(dst, "zz-manager-decision.md"), [
+    `# Update ${new Date().toISOString()}: on-call manager decision`,
+    `The earlier P0 handling of this case already executed these actions. Do not repeat them:`, done,
+    `The on-call property manager has now decided (${decision.source}): Option ${decision.chosen_option}. ${decision.decision ?? ""}`,
+    `Act on this decision now: take the next steps it implies and update the tenant on what is happening.`,
+  ].join("\n\n"));
+  appendFollowup(dir, "decision_received", { ...decision });
+  appendFollowup(dir, "acting", { followup_case: id });
+  console.log(`acting on decision for ${caseId} (option ${decision.chosen_option}) as ${id}`);
+
+  const args = ["src/run.ts", "--cases", LIVE_CASES, "--only", id, "--out", LIVE_OUT, "--deadline", "5", "--force"];
+  if (process.env.DATA_DIR) args.push("--data", process.env.DATA_DIR);
+  if (!process.env.ANTHROPIC_API_KEY) args.push("--mock-model");
+  const { ESCALATION_WEBHOOK_URL: _noPage, ...env } = process.env;
+  const child = spawn(path.resolve("node_modules/.bin/tsx"), args, { env, stdio: ["ignore", "pipe", "pipe"] });
+  let log = "";
+  child.stdout.on("data", (d) => (log += d)); child.stderr.on("data", (d) => (log += d));
+  child.on("close", async (code) => {
+    const out = path.join(LIVE_OUT, id);
+    fs.mkdirSync(out, { recursive: true });
+    fs.writeFileSync(path.join(out, "runner.log"), log);
+    const events = fs.existsSync(path.join(out, "trace.jsonl")) ? fs.readFileSync(path.join(out, "trace.jsonl"), "utf8").split("\n").filter(Boolean).map((l) => JSON.parse(l)) : [];
+    const staged = new Map(events.filter((e) => e.event === "tool.staged").map((e) => [e.actionId, e]));
+    const executed = events.filter((e) => e.event === "execute.success" && staged.has(e.actionId)).map((e) => staged.get(e.actionId));
+    const tenantMsgs = executed.filter((e: any) => e.tool === "send_message" && /tenant|reporter|caller/i.test(String(e.input?.to_party ?? ""))).map((e: any) => String(e.input?.body ?? ""));
+    const contact = tenantContact(caseId);
+    const sent = [];
+    for (const body of tenantMsgs) {
+      const result = contact ? await sendMessage(contact.channel, contact.to, body) : { ok: false, error: "no tenant contact (set DEMO_TENANT_WHATSAPP)" };
+      sent.push({ to: contact?.to ?? null, body, result });
+    }
+    appendFollowup(dir, "done", { runner_exit: code, followup_case: id, executed: executed.map((e: any) => e.tool), tenant_messages: sent });
+    console.log(`decision follow-through for ${caseId}: ${executed.length} actions, ${sent.filter((m) => m.result.ok).length}/${sent.length} tenant messages sent`);
+  });
+}
+
+/** Everything the on-call panel needs for one case, read from the files the service and runner wrote. */
+function onCallTimeline(caseId: string) {
+  const dir = caseDir(caseId);
+  if (!dir) return undefined;
+  const readJson = (f: string) => { try { return JSON.parse(fs.readFileSync(path.join(dir, f), "utf8")); } catch { return undefined; } };
+  const readLines = (f: string) => fs.existsSync(path.join(dir, f)) ? fs.readFileSync(path.join(dir, f), "utf8").split("\n").filter(Boolean).map((l) => JSON.parse(l)) : [];
+  const page = readLines("calls.jsonl").at(-1);
+  return {
+    case_id: caseId,
+    page: page ? { at: page.ts, call_placed: Boolean(page.result?.placed), whatsapp_sent: Boolean(page.whatsapp?.sent), brief: callBrief(page.request ?? { case_id: caseId }) } : null,
+    call: readJson("callback.json") ?? null,
+    whatsapp_reply: readJson("whatsapp_reply.json") ?? null,
+    followup: readLines("followup.jsonl"),
+  };
 }
 
 /**
@@ -329,6 +418,8 @@ http.createServer(async (req, res) => {
       }) : [];
       return json(res, 200, { cases });
     }
+    const oc = url.pathname.match(/^\/api\/oncall\/([^/]+)$/);
+    if (req.method === "GET" && oc) { const t = onCallTimeline(decodeURIComponent(oc[1])); return t ? json(res, 200, t) : json(res, 404, { error: "no such case" }); }
     const m = url.pathname.match(/^\/api\/cases\/([^/]+)$/);
     if (req.method === "GET" && m) {
       const dir = path.join(OUT, decodeURIComponent(m[1]));
@@ -379,9 +470,10 @@ http.createServer(async (req, res) => {
         callback_requested: r.callback_requested?.value ?? null, failure_reason: data.failure_reason ?? null,
         summary: data.analysis?.transcript_summary ?? null, conversation_id: data.conversation_id ?? null,
       };
-      const dir = path.join(OUT, String(caseId)); fs.mkdirSync(dir, { recursive: true });
+      const dir = caseDir(String(caseId)) ?? path.join(OUT, String(caseId)); fs.mkdirSync(dir, { recursive: true });
       fs.writeFileSync(path.join(dir, "callback.json"), JSON.stringify(callback, null, 2));
       console.log(`callback for ${caseId}: ${status} option=${chosen}`);
+      if (status === "decided") actOnDecision(String(caseId), { chosen_option: String(chosen), decision: callback.decision, source: "by phone" });
       return json(res, 200, { ok: true });
     }
     json(res, 404, { error: "not found" });
