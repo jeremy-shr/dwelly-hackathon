@@ -7,7 +7,7 @@ import { OnCall, hasOnCall } from "./OnCall";
 
 export function CaseView({ caseKey, onBack, onEvent }: { caseKey: string; onBack: () => void; onEvent: (i: number) => void }) {
   const d = usePoll<CaseDetail>(`/api/case/${caseKey}`, 1500);
-  const list = useMemo(() => (d ? steps(d.events, d.summary.escalation) : []), [d]);
+  const list = useMemo(() => (d ? steps(d.events) : []), [d]);
   const [open, setOpen] = useState<string | null | undefined>(undefined); // undefined = not chosen yet
 
   // Open the first failing step by default; the rest stay collapsed.
@@ -268,16 +268,31 @@ function StepDetail({ step, d }: { step: Step; d: CaseDetail }) {
     }
     case "escalated": {
       const e = d.resolution?.escalation;
-      const written = sections(d.answer)["Escalation"] ?? "";
-      if (written) return <Md text={written} />;
-      if (!e || !e.tier || e.tier === "none") return <p className="muted">No escalation. The agent could act within its authority.</p>;
+      const autos = ev.filter((x) => x.event === "escalate.auto");
+      const agent = e && e.tier && e.tier !== "none";
+      if (!agent && !autos.length) return <p className="muted">No escalation. The agent could act within its authority.</p>;
       return (
-        <dl className="kv">
-          <dt>Decision needed</dt><dd>{e.decisionRequired ?? "–"}</dd>
-          <dt>Reason</dt><dd>{e.reason ?? "–"}</dd>
-          {e.deadline && <><dt>Deadline</dt><dd className="mono">{e.deadline}</dd></>}
-          {e.handover && <><dt>Handover</dt><dd>{e.handover}</dd></>}
-        </dl>
+        <>
+          {autos.map((a, i) => (
+            <div className="detail" key={i} data-tone={a.tier === "P0" ? "bad" : "warn"}>
+              <span className="mark" />
+              <span>
+                <b>Escalated by code ({a.tier})</b><span className="r">{String(a.id ?? "").replace(/^escalate#/, "")}</span>
+                <span className="d"><br />{a.decisionRequired}</span>
+                {a.reason && <span className="d"><br />{a.reason}</span>}
+              </span>
+            </div>
+          ))}
+          {agent && (
+            <dl className="kv">
+              <dt>Agent's tier</dt><dd>{e.tier}</dd>
+              <dt>Decision needed</dt><dd>{e.decisionRequired ?? "–"}</dd>
+              <dt>Reason</dt><dd>{e.reason ?? "–"}</dd>
+              {e.deadline && <><dt>Deadline</dt><dd className="mono">{e.deadline}</dd></>}
+              {e.handover && <><dt>Handover</dt><dd>{e.handover}</dd></>}
+            </dl>
+          )}
+        </>
       );
     }
     case "written":

@@ -157,8 +157,8 @@ function row(i: number, folder: string, ids: Record<string, string>) {
       withdrawn: count("reconcile.withdrawn"),
       check_problems: events.filter((e) => e.event === "checks").reduce((n, e) => n + (e.problems?.length ?? 0), 0),
     },
-    // After failed checks the orchestrator escalates in code; that tier is in ANSWER.md, not in the submit payload.
-    escalation: section(answer, "Escalation").match(/^Tier (P\d|none)/)?.[1] ?? resolution?.escalation?.tier ?? null,
+    // The code's own escalation (escalate.auto, after failed checks or unresolved claims) outranks the agent's tier.
+    escalation: [...events].reverse().find((e) => e.event === "escalate.auto")?.tier ?? resolution?.escalation?.tier ?? null,
     handover: resolution?.escalation?.handover ?? null,
     page: p0.length ? p0[p0.length - 1].event.replace("escalate.p0.", "") : null,
     paged: p0.some((e) => e.event === "escalate.p0.call"),

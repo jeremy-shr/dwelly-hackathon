@@ -71,26 +71,31 @@ export function describe(tool: string, i: any): { verb: string; detail: string }
   }
 }
 
+// The code's own escalations (after failed checks or unresolved claims) are staged without a tool.staged event.
+const autoStaged = (events: Ev[]) =>
+  events
+    .filter((e) => e.event === "escalate.auto")
+    .map((e) => ({ actionId: e.id ?? "escalate#auto", tool: "escalate", input: { tier: e.tier, decision_required: e.decisionRequired, summary: e.reason }, auto: true }));
+
 // Every staged action with what execution did to it.
 export function actions(events: Ev[]): Action[] {
   const withdrawn = new Set<string>(events.filter((e) => e.event === "reconcile.withdrawn").flatMap((e) => e.withdrawn ?? []));
-  return events
-    .filter((e) => e.event === "tool.staged")
-    .map((s) => {
-      const runs = events.filter((e) => e.actionId === s.actionId && e.event.startsWith("execute."));
-      const last = runs[runs.length - 1];
-      let result: Action["result"] = "not run";
-      if (withdrawn.has(s.actionId)) result = "withdrawn";
-      else if (last?.event === "execute.success") result = "success";
-      else if (last?.event === "execute.failure") result = "failure";
-      else if (last?.event === "execute.unknown") result = "unknown";
-      return { id: s.actionId, tool: s.tool, input: s.input ?? {}, result, error: last?.error, attempts: runs.length, phase: last?.phase };
-    });
+  const staged = [...events.filter((e) => e.event === "tool.staged"), ...autoStaged(events)];
+  return staged.map((s) => {
+    const runs = events.filter((e) => e.actionId === s.actionId && e.event.startsWith("execute."));
+    const last = runs[runs.length - 1];
+    let result: Action["result"] = "not run";
+    if (withdrawn.has(s.actionId)) result = "withdrawn";
+    else if (last?.event === "execute.success") result = "success";
+    else if (last?.event === "execute.failure") result = "failure";
+    else if (last?.event === "execute.unknown") result = "unknown";
+    return { id: s.actionId, tool: s.tool, input: s.input ?? {}, result, error: last?.error, attempts: runs.length, phase: last?.phase };
+  });
 }
 
 export const ruleIds = (text: string) => text.match(/PM-[A-Z]+-\d+/g) ?? [];
 
-export function steps(raw: Ev[], tierFromAnswer?: string | null): Step[] {
+export function steps(raw: Ev[]): Step[] {
   const events: IEv[] = raw.map((e, i) => ({ ...e, i }));
   const t0 = events[0] ? Date.parse(events[0].ts) : 0;
   const of = (...names: string[]) => events.filter((e) => names.some((n) => (n.endsWith(".") ? e.event.startsWith(n) : e.event === n)));
@@ -106,6 +111,7 @@ export function steps(raw: Ev[], tierFromAnswer?: string | null): Step[] {
   const exec = of("execute.");
   const recon = of("reconcile.", "claims.unresolved");
   const esc = of("escalate.");
+  const autos = esc.filter((e) => e.event === "escalate.auto");
   const end = of("case.end");
 
   const s0 = start[0];
@@ -127,8 +133,10 @@ export function steps(raw: Ev[], tierFromAnswer?: string | null): Step[] {
   const withdrawn = recon.filter((e) => e.event === "reconcile.withdrawn").flatMap((e) => e.withdrawn ?? []);
   const retried = acts.filter((a) => a.attempts > 1);
   const resolution = [...events].reverse().find((e) => e.event === "tool.control" && e.tool === "submit_resolution")?.input;
-  const tier: string | undefined = tierFromAnswer ?? resolution?.escalation?.tier;
-  const page = esc[esc.length - 1];
+  // The tier: the code's escalation (escalate.auto) outranks the agent's; P0 outranks P1.
+  const tiers = [...autos.map((e) => e.tier), resolution?.escalation?.tier].filter((t) => t === "P0" || t === "P1");
+  const tier: string | undefined = tiers.includes("P0") ? "P0" : tiers[0] ?? resolution?.escalation?.tier;
+  const page = [...esc].reverse().find((e) => e.event.startsWith("escalate.p0."));
   const pageWord = page
     ? page.event === "escalate.p0.call"
       ? `paged${page.status ? ` (${page.status})` : ""}`
@@ -212,7 +220,7 @@ export function steps(raw: Ev[], tierFromAnswer?: string | null): Step[] {
     {
       key: "escalated",
       label: "Escalated",
-      line: tier && tier !== "none" ? `${tier} · ${pageWord ?? (tier === "P0" ? (ended ? "no page event" : "paging") : "handover recorded for the duty manager")}` : esc.length ? pageWord ?? "" : ended ? "none" : "",
+      line: tier && tier !== "none" ? `${tier}${autos.length ? " · by code: " + autos.map((e) => clean(String(e.id ?? "auto").replace(/^escalate#/, ""))).join(", ") : ""} · ${pageWord ?? (tier === "P0" ? (ended ? "no page event" : "paging") : "handover recorded for the duty manager")}` : esc.length ? pageWord ?? "" : ended ? "none" : "",
       tone: tier === "P0" || esc.some((e) => /failed|rate/.test(e.event)) ? "bad" : tier === "P1" ? "warn" : ended ? "idle" : esc.length ? "warn" : pending(),
       ms: at(esc),
       events: esc,
