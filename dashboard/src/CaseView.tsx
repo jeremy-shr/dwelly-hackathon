@@ -3,6 +3,7 @@ import { usePoll, clean } from "./api";
 import type { CaseDetail } from "./types";
 import { actions, describe, offset, oneLine, ruleIds, steps, type Step } from "./pipeline";
 import { Md, messages, pick, sections } from "./md";
+import { OnCall, hasOnCall } from "./OnCall";
 
 export function CaseView({ caseKey, onBack, onEvent }: { caseKey: string; onBack: () => void; onEvent: (i: number) => void }) {
   const d = usePoll<CaseDetail>(`/api/case/${caseKey}`, 1500);
@@ -93,6 +94,8 @@ export function CaseView({ caseKey, onBack, onEvent }: { caseKey: string; onBack
             <div className="col-h">Messages sent · {msgs.length}</div>
             {msgs.length === 0 ? <p className="none">No messages sent.</p> : <Messages list={msgs} />}
           </div>
+
+          {hasOnCall(d) && <OnCall d={d} />}
 
           <div className="section">
             <div className="col-h">Automated checks</div>
