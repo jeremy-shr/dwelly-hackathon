@@ -6,7 +6,7 @@
 - Repository URL: https://github.com/jeremy-shr/dwelly-hackathon
 - Code-freeze commit hash:
 - Reality Test results path: `ANSWERS/`
-- Demo video path: `demo/demo.mp4`
+- Demo video path: `demo/dwelly-demo.mp4`
 - LinkedIn post URL:
 - X post URL:
 
