@@ -74,11 +74,22 @@ async function recordAlertReply(from: string, text: string): Promise<boolean> {
   return true;
 }
 
+/** Live case ids follow the sample format: L01-gas-leak-kitchen (L for live, a running number, keywords). */
+const LIVE_ID = /^L\d{2,}-/;
+const liveNumber = (id: string) => Number(id.match(/^L(\d+)/)?.[1] ?? 0);
+const STOP = new Set("hi hello hey there is are a an the my our your i im i'm its it's at in on of to and please help urgent we have has got just this that it me with from".split(" "));
+function nextLiveId(text: string): string {
+  const used = [LIVE_CASES, LIVE_OUT].flatMap((d) => (fs.existsSync(d) ? fs.readdirSync(d) : [])).map(liveNumber);
+  const n = Math.max(0, ...used) + 1;
+  const words = text.toLowerCase().replace(/[^a-z\s]/g, " ").split(/\s+/).filter((w) => w.length > 2 && !STOP.has(w)).slice(0, 3);
+  return `L${String(n).padStart(2, "0")}-${words.join("-") || "message"}`;
+}
+
 /** An open live case from this sender in the last 30 minutes, so a follow-up message joins the same case. */
 function openCaseFor(from: string): string | undefined {
   if (!fs.existsSync(LIVE_CASES)) return undefined;
   const cutoff = Date.now() - 30 * 60_000;
-  return fs.readdirSync(LIVE_CASES).filter((d) => d.startsWith("live-") && !d.endsWith("-decision")).sort().reverse().find((d) => {
+  return fs.readdirSync(LIVE_CASES).filter((d) => LIVE_ID.test(d) && !d.endsWith("-decision")).sort((a, b) => liveNumber(b) - liveNumber(a)).find((d) => {
     try { const m = JSON.parse(fs.readFileSync(path.join(LIVE_CASES, d, "message.json"), "utf8")); return m.from === from && Date.parse(m.received_at) > cutoff; } catch { return false; }
   });
 }
@@ -98,7 +109,7 @@ function receiveMessage(channel: string, from: string, body: string): { id: stri
     answerLiveCase(open, channel, from, true);
     return { id: open, threaded: true };
   }
-  const id = `live-${now.replace(/[:.]/g, "-")}`;
+  const id = nextLiveId(body);
   const dir = path.join(LIVE_CASES, id); fs.mkdirSync(dir, { recursive: true });
   fs.writeFileSync(path.join(dir, "message.json"), JSON.stringify({ channel, received_at: now, from, message: body }, null, 2));
   console.log(`inbound ${channel} from ${from}: case ${id}`);
@@ -106,8 +117,8 @@ function receiveMessage(channel: string, from: string, body: string): { id: stri
   return { id, threaded: false };
 }
 const ackText = (id: string, threaded = false) => threaded
-  ? `Thanks, we've added that to your report (ref ${id.slice(5, 24)}).`
-  : `Thanks, Northbridge Lettings has received your message (ref ${id.slice(5, 24)}). We're looking at it now and will reply here shortly.`;
+  ? `Thanks, we've added that to your report (ref ${id.split("-")[0]}).`
+  : `Thanks, Northbridge Lettings has received your message (ref ${id.split("-")[0]}). We're looking at it now and will reply here shortly.`;
 
 /**
  * WHATSAPP_POLL=1: instead of the sandbox's console-only webhook, poll Twilio for new inbound WhatsApps to
@@ -473,8 +484,9 @@ http.createServer(async (req, res) => {
         };
       }) : [];
       // Live cases (tenant messages arriving now) first, newest at the top; the batch keeps its order below.
-      const live = (cases as any[]).filter((c) => String(c.id).startsWith("live-")).sort((a, b) => String(b.id).localeCompare(String(a.id)));
-      return json(res, 200, { cases: [...live, ...(cases as any[]).filter((c) => !String(c.id).startsWith("live-"))] });
+      const isLive = (c: any) => LIVE_ID.test(String(c.id));
+      const live = (cases as any[]).filter(isLive).sort((a, b) => liveNumber(String(b.id)) - liveNumber(String(a.id)));
+      return json(res, 200, { cases: [...live, ...(cases as any[]).filter((c) => !isLive(c))] });
     }
     const oc = url.pathname.match(/^\/api\/oncall\/([^/]+)$/);
     if (req.method === "GET" && oc) { const t = onCallTimeline(decodeURIComponent(oc[1])); return t ? json(res, 200, t) : json(res, 404, { error: "no such case" }); }
